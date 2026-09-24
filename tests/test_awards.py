@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -15,6 +18,9 @@ class AwardServiceTests(unittest.TestCase):
         AwardsHandler.store.events.clear()
         AwardsHandler.store.data.clear()
         AwardsHandler.store.idempotency.clear()
+
+    def tearDown(self) -> None:
+        os.environ.pop("MYOTA_OBJECT_STORAGE_LOCAL_DIR", None)
 
     def _template(self) -> dict:
         kinds = ("AWARD_NAME", "CALLSIGN", "PERSON_NAME", "DATE_OBTAINED", "MANAGER_NAME", "MANAGER_SIGNATURE")
@@ -52,6 +58,20 @@ class AwardServiceTests(unittest.TestCase):
         issuance = AwardsHandler.issue_request(None, {"requestId": request["id"], "_body": {"managerName": "Award Manager", "signatureAssetId": signature["id"]}})
         self.assertEqual(issuance["artifact"]["mediaType"], "application/pdf")
         self.assertEqual(issuance["renderSpec"]["printSpec"]["page"], "A4")
+        higher = AwardsHandler.request_award(None, {"_body": {"awardId": award["id"], "levelId": "50", "subjectId": "operator-1",
+            "callsign": "EA7TEST", "personName": "Test Operator", "facts": {"qsoCount": 55, "entityType": "MUNICIPAL_PARK"}}})
+        self.assertEqual(higher["levelId"], "50")
+
+    def test_asset_content_is_persisted_in_local_object_store(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            os.environ["MYOTA_OBJECT_STORAGE_LOCAL_DIR"] = directory
+            asset = AwardsHandler.register_asset(None, {"_body": {"kind": "SIGNATURE", "name": "Manager",
+                "objectKey": "signatures/manager.bin", "mediaType": "image/png", "widthPx": 120, "heightPx": 40}})
+            content = base64.b64encode(b"test-image-bytes").decode()
+            stored = AwardsHandler.asset_content(None, {"assetId": asset["id"], "_body": {"contentBase64": content}})
+            self.assertEqual(stored["contentStatus"], "STORED")
+            self.assertTrue(stored["contentSha256"])
+            self.assertTrue(os.path.exists(os.path.join(directory, "myota-awards", "signatures", "manager.bin")))
 
 
 if __name__ == "__main__":

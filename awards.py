@@ -8,14 +8,62 @@ from __future__ import annotations
 
 import math
 import os
+from io import BytesIO
 from http.server import ThreadingHTTPServer
 from typing import Any
 
 from common import JsonHandler, Store, new_id, now, page_result, require, verify_token
+from storage import ObjectStore, decode_base64
 
 PAGE_SIZES_MM = {"A4": (210.0, 297.0), "LETTER": (215.9, 279.4)}
 ASSET_KINDS = {"BACKGROUND", "SIGNATURE"}
 CATEGORIES = {"HUNTER", "ACTIVATOR"}
+
+
+def _render_certificate(issuance: dict[str, Any]) -> dict[str, Any] | None:
+    """Render an issued certificate when both registered image assets are available."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        return None
+    store = ObjectStore()
+    spec = issuance["renderSpec"]
+    background = spec["backgroundAsset"]
+    signature = spec["signatureAsset"]
+    background_bytes = store.get(background["bucket"], background["objectKey"])
+    signature_bytes = store.get(signature["bucket"], signature["objectKey"])
+    if not background_bytes or not signature_bytes:
+        return None
+    print_spec = spec["printSpec"]
+    dimensions = print_spec.get("recommended") or {
+        "widthPx": math.ceil(PAGE_SIZES_MM[print_spec["page"]][0] / 25.4 * print_spec["dpi"]),
+        "heightPx": math.ceil(PAGE_SIZES_MM[print_spec["page"]][1] / 25.4 * print_spec["dpi"]),
+    }
+    canvas = Image.open(BytesIO(background_bytes)).convert("RGB").resize((dimensions["widthPx"], dimensions["heightPx"]))
+    signature_image = Image.open(BytesIO(signature_bytes)).convert("RGBA")
+    draw = ImageDraw.Draw(canvas)
+    font = ImageFont.load_default()
+    values = {"AWARD_NAME": issuance["awardName"], "CALLSIGN": issuance["callsign"],
+              "PERSON_NAME": issuance["personName"], "DATE_OBTAINED": issuance["dateObtained"],
+              "MANAGER_NAME": issuance["managerName"]}
+    for element in spec["elements"]:
+        x, y = int(element["x"] * canvas.width), int(element["y"] * canvas.height)
+        width, height = int(element["width"] * canvas.width), int(element["height"] * canvas.height)
+        if element["kind"] == "MANAGER_SIGNATURE":
+            image = signature_image.copy()
+            image.thumbnail((max(1, width), max(1, height)))
+            canvas.paste(image, (x + (width - image.width) // 2, y + (height - image.height) // 2), image)
+            continue
+        text = str(values.get(element["kind"], ""))
+        bounds = draw.textbbox((0, 0), text, font=font)
+        draw.text((x + max(0, (width - (bounds[2] - bounds[0])) // 2), y + max(0, (height - (bounds[3] - bounds[1])) // 2)), text, fill="black", font=font)
+    output = BytesIO()
+    canvas.save(output, format="PDF", resolution=print_spec["dpi"])
+    artifact = issuance["artifact"]
+    stored = store.put(artifact["bucket"], artifact["objectKey"], output.getvalue(), "application/pdf")
+    download_url = store.presigned_get(artifact["bucket"], artifact["objectKey"])
+    return {"downloadReady": True, "contentSha256": stored["sha256"], "byteSize": stored["size"],
+            "renderedAt": now(), "downloadUrl": download_url}
 
 
 def _number(value: Any, name: str) -> float:
@@ -122,11 +170,42 @@ class AwardsHandler(JsonHandler):
         return AwardsHandler._bucket("definitions")[award_id]
 
     @staticmethod
+    def _claims(p: dict[str, str]) -> dict[str, Any]:
+        if not p.get("_http"):
+            return {}
+        authorization = p.get("Authorization", "")
+        if not authorization.startswith("Bearer "):
+            return {}
+        return verify_token(authorization[7:])
+
+    @staticmethod
+    def subject_facts(award: dict[str, Any], subject_id: str) -> dict[str, Any]:
+        activations = [item for item in AwardsHandler.store.items.values()
+                       if item.get("programmeSlug") == award["programmeSlug"]]
+        if award.get("category") == "ACTIVATOR":
+            activations = [item for item in activations if item.get("operatorId") == subject_id]
+            qsos = [qso for activation in activations for qso in activation.get("qsos", [])]
+        else:
+            qsos = [qso for activation in activations for qso in activation.get("qsos", [])
+                    if qso.get("hunterId") == subject_id]
+        return {"qsoCount": len(qsos), "activationCount": len(activations),
+                "uniqueCallsignCount": len({qso.get("workedCallsign") for qso in qsos if qso.get("workedCallsign")}),
+                "uniqueEntityCount": len({activation.get("entityId") for activation in activations if activation.get("entityId")}),
+                "entityType": next((activation.get("entityType") for activation in activations if activation.get("entityType")), None)}
+
+    @staticmethod
     def list_awards(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
-        AwardsHandler._authorize(p, {"awards.read", "awards.admin"})
+        claims = AwardsHandler._claims(p)
+        if p.get("_http") and not claims:
+            public = True
+        else:
+            AwardsHandler._authorize(p, {"awards.read", "awards.admin"})
+            public = False
         from urllib.parse import parse_qs, urlparse
         query = parse_qs(urlparse(p.get("_path", "")).query)
         items = list(AwardsHandler._bucket("definitions").values())
+        if public:
+            items = [item for item in items if item.get("status") == "PUBLISHED"]
         if query.get("programme"):
             items = [item for item in items if item.get("programmeSlug") == query["programme"][0]]
         if query.get("category"):
@@ -135,8 +214,13 @@ class AwardsHandler(JsonHandler):
 
     @staticmethod
     def get_award(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
-        AwardsHandler._authorize(p, {"awards.read", "awards.admin"})
-        return AwardsHandler._award(p["awardId"])
+        claims = AwardsHandler._claims(p)
+        award = AwardsHandler._award(p["awardId"])
+        if p.get("_http") and not claims and award.get("status") != "PUBLISHED":
+            raise PermissionError("only published awards are public")
+        if claims:
+            AwardsHandler._authorize(p, {"awards.read", "awards.admin"})
+        return award
 
     @staticmethod
     def save_award(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
@@ -213,9 +297,31 @@ class AwardsHandler(JsonHandler):
                  "heightPx": int(body["heightPx"]), "sha256": body.get("sha256"), "storage": "MINIO",
                  "bucket": body.get("bucket") or os.environ.get("MYOTA_OBJECT_STORAGE_BUCKET", "myota-awards"),
                  "objectStorageEndpoint": os.environ.get("MYOTA_OBJECT_STORAGE_ENDPOINT", "http://minio:9000"),
+                 "contentStatus": "MISSING",
                  "createdAt": now()}
         AwardsHandler._bucket("assets")[asset["id"]] = asset
         return {**asset, "_status": 201}
+
+    @staticmethod
+    def asset_upload_url(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
+        AwardsHandler._authorize(p, {"awards.admin"})
+        asset = AwardsHandler._bucket("assets")[p["assetId"]]
+        url = ObjectStore().presigned_put(asset["bucket"], asset["objectKey"])
+        if not url:
+            raise ValueError("object storage presigned uploads are unavailable; configure MinIO or S3")
+        return {"assetId": asset["id"], "method": "PUT", "url": url, "expiresInSeconds": 900}
+
+    @staticmethod
+    def asset_content(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
+        """Small/local upload path; larger clients should use asset_upload_url."""
+        AwardsHandler._authorize(p, {"awards.admin"})
+        asset = AwardsHandler._bucket("assets")[p["assetId"]]
+        body = p["_body"]
+        require(body, "contentBase64")
+        content = decode_base64(body["contentBase64"])
+        stored = ObjectStore().put(asset["bucket"], asset["objectKey"], content, asset["mediaType"])
+        asset.update({"contentStatus": "STORED", "contentSha256": stored["sha256"], "contentSize": stored["size"], "storedAt": now()})
+        return asset
 
     @staticmethod
     def list_assets(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
@@ -238,14 +344,34 @@ class AwardsHandler(JsonHandler):
                 "metric": metric, "progress": progress, "levels": levels}
 
     @staticmethod
+    def progress(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
+        claims = AwardsHandler._claims(p)
+        body = p.get("_body", {})
+        award_id = body.get("awardId") or p.get("awardId")
+        subject_id = body.get("subjectId") or p.get("subjectId")
+        require({"awardId": award_id, "subjectId": subject_id}, "awardId", "subjectId")
+        if claims and claims.get("sub") != subject_id:
+            AwardsHandler._authorize(p, {"awards.read", "awards.admin"})
+        elif p.get("_http"):
+            AwardsHandler._authorize(p, {"awards.read", "awards.request", "awards.admin", "identity.me"})
+        award = AwardsHandler._award(award_id)
+        facts = AwardsHandler.subject_facts(award, subject_id)
+        return AwardsHandler.evaluate(None, {"_body": {"awardId": award_id, "subjectId": subject_id, "facts": facts}})
+
+    @staticmethod
     def request_award(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
-        AwardsHandler._authorize(p, {"awards.request", "awards.admin"})
         body = p["_body"]
-        require(body, "awardId", "levelId", "subjectId", "callsign", "personName", "facts")
+        require(body, "awardId", "levelId", "subjectId", "callsign", "personName")
+        claims = AwardsHandler._claims(p)
+        if claims and claims.get("sub") == body["subjectId"] and "awards.request" not in set(claims.get("scp", [])):
+            AwardsHandler._authorize(p, {"identity.me"})
+        else:
+            AwardsHandler._authorize(p, {"awards.request", "awards.admin"})
         award = AwardsHandler._award(body["awardId"])
         if award["status"] != "PUBLISHED":
             raise ValueError("only published awards can be requested")
-        evaluation = AwardsHandler.evaluate(None, {"_body": {"awardId": award["id"], "subjectId": body["subjectId"], "facts": body["facts"]}})
+        facts = AwardsHandler.subject_facts(award, body["subjectId"]) if claims else dict(body.get("facts") or {})
+        evaluation = AwardsHandler.evaluate(None, {"_body": {"awardId": award["id"], "subjectId": body["subjectId"], "facts": facts}})
         level = next((level for level in evaluation["levels"] if level.get("id") == body["levelId"]), None)
         if not level or not level["eligible"]:
             raise ValueError("the requested award level is not currently eligible")
@@ -256,7 +382,7 @@ class AwardsHandler(JsonHandler):
             return existing
         request = {"id": new_id(), "awardId": award["id"], "programmeSlug": award["programmeSlug"], "levelId": body["levelId"],
                    "subjectId": body["subjectId"], "category": award["category"], "callsign": body["callsign"], "personName": body["personName"],
-                   "facts": body["facts"], "status": "REQUESTED", "requestedAt": now()}
+                   "facts": facts, "status": "REQUESTED", "requestedAt": now()}
         AwardsHandler._bucket("requests")[request["id"]] = request
         AwardsHandler.store.event("awards.request.created.v1", "award_request", request["id"], request)
         return {**request, "_status": 201}
@@ -293,6 +419,11 @@ class AwardsHandler(JsonHandler):
                                   "mediaType": "application/pdf", "downloadReady": False},
                     "renderSpec": {"backgroundAsset": award["backgroundAsset"], "printSpec": award["printSpec"],
                                    "elements": award["template"]["elements"], "signatureAsset": signature}}
+        rendered = _render_certificate(issuance)
+        if rendered:
+            issuance["artifact"].update(rendered)
+        else:
+            issuance["artifact"]["renderStatus"] = "WAITING_FOR_ASSETS"
         AwardsHandler._bucket("issuances")[issuance["id"]] = issuance
         request.update({"status": "ISSUED", "issuedAwardId": issuance["id"], "issuedAt": issued_at})
         AwardsHandler.store.event("awards.issued.v1", "award_issuance", issuance["id"], issuance)
@@ -303,21 +434,46 @@ class AwardsHandler(JsonHandler):
         AwardsHandler._authorize(p, {"awards.read", "awards.admin"})
         return page_result(list(AwardsHandler._bucket("issuances").values()))
 
+    @staticmethod
+    def render_issuance(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
+        AwardsHandler._authorize(p, {"awards.admin"})
+        issuance = AwardsHandler._bucket("issuances")[p["issuanceId"]]
+        rendered = _render_certificate(issuance)
+        if not rendered:
+            raise ValueError("certificate assets are not available or the PDF renderer is not installed")
+        issuance["artifact"].update(rendered)
+        return issuance
+
+    @staticmethod
+    def download_issuance(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
+        AwardsHandler._authorize(p, {"awards.read", "awards.request", "awards.admin"})
+        issuance = AwardsHandler._bucket("issuances")[p["issuanceId"]]
+        if not issuance["artifact"].get("downloadReady"):
+            raise ValueError("certificate is not ready for download")
+        artifact = issuance["artifact"]
+        url = ObjectStore().presigned_get(artifact["bucket"], artifact["objectKey"])
+        return {"issuanceId": issuance["id"], "downloadUrl": url, "objectKey": artifact["objectKey"], "expiresInSeconds": 900}
+
 
 AwardsHandler.routes = {
     ("GET", "/v1/awards"): AwardsHandler.list_awards,
-    ("GET", "/v1/awards/{awardId}"): AwardsHandler.get_award,
     ("POST", "/v1/awards"): AwardsHandler.save_award,
+    ("GET", "/v1/awards/assets"): AwardsHandler.list_assets,
+    ("POST", "/v1/awards/assets"): AwardsHandler.register_asset,
+    ("GET", "/v1/awards/requests"): AwardsHandler.list_requests,
+    ("GET", "/v1/awards/issuances"): AwardsHandler.list_issuances,
+    ("GET", "/v1/awards/{awardId}"): AwardsHandler.get_award,
     ("POST", "/v1/awards/{awardId}/submit"): AwardsHandler.submit_award,
     ("POST", "/v1/awards/{awardId}/review"): AwardsHandler.review_award,
     ("POST", "/v1/awards/{awardId}/publish"): AwardsHandler.publish_award,
-    ("GET", "/v1/awards/assets"): AwardsHandler.list_assets,
-    ("POST", "/v1/awards/assets"): AwardsHandler.register_asset,
+    ("POST", "/v1/awards/assets/{assetId}/upload-url"): AwardsHandler.asset_upload_url,
+    ("POST", "/v1/awards/assets/{assetId}/content"): AwardsHandler.asset_content,
     ("POST", "/v1/awards/evaluate"): AwardsHandler.evaluate,
-    ("GET", "/v1/awards/requests"): AwardsHandler.list_requests,
+    ("POST", "/v1/awards/progress"): AwardsHandler.progress,
     ("POST", "/v1/awards/requests"): AwardsHandler.request_award,
     ("POST", "/v1/awards/requests/{requestId}/issue"): AwardsHandler.issue_request,
-    ("GET", "/v1/awards/issuances"): AwardsHandler.list_issuances,
+    ("POST", "/v1/awards/issuances/{issuanceId}/render"): AwardsHandler.render_issuance,
+    ("GET", "/v1/awards/issuances/{issuanceId}/download"): AwardsHandler.download_issuance,
 }
 
 

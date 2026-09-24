@@ -35,6 +35,7 @@ class ActivityHandler(JsonHandler):
         def create() -> dict[str, Any]:
             activation = {"id": new_id(), "programmeSlug": body["programmeSlug"], "entityId": body["entityId"],
                           "operatorId": body["operatorId"], "startedAt": body["startedAt"], "endedAt": body.get("endedAt"),
+                          "entityType": body.get("entityType"), "location": body.get("location"),
                           "status": "OPEN", "qsos": [], "createdAt": now(), "updatedAt": now()}
             ActivityHandler.store.items[activation["id"]] = activation
             ActivityHandler.store.event("activity.activation.created.v1", "activation", activation["id"], activation)
@@ -54,7 +55,9 @@ class ActivityHandler(JsonHandler):
             raise ValueError("activation is not open")
         def add() -> dict[str, Any]:
             qso = {"id": new_id(), "workedCallsign": body["workedCallsign"].upper(), "timestamp": body["timestamp"],
-                   "band": body.get("band"), "mode": body.get("mode"), "rst": body.get("rst"), "source": body.get("source", "manual"), "createdAt": now()}
+                   "band": body.get("band"), "mode": body.get("mode"), "rst": body.get("rst"),
+                   "hunterId": body.get("hunterId"), "workedEntityId": body.get("workedEntityId"),
+                   "source": body.get("source", "manual"), "createdAt": now()}
             activation["qsos"].append(qso)
             activation["updatedAt"] = now()
             ActivityHandler.store.event("activity.qso.recorded.v1", "activation", activation["id"], qso)
