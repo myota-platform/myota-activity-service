@@ -73,6 +73,36 @@ class AwardServiceTests(unittest.TestCase):
             self.assertTrue(stored["contentSha256"])
             self.assertTrue(os.path.exists(os.path.join(directory, "myota-awards", "signatures", "manager.bin")))
 
+    def test_issuance_renders_pdf_when_local_assets_exist(self) -> None:
+        try:
+            from PIL import Image
+            from io import BytesIO
+        except ImportError:
+            self.skipTest("Pillow is not installed in the dependency-free host test environment")
+        with tempfile.TemporaryDirectory() as directory:
+            os.environ["MYOTA_OBJECT_STORAGE_LOCAL_DIR"] = directory
+            def png(width: int, height: int, color: str) -> str:
+                output = BytesIO(); Image.new("RGBA", (width, height), color).save(output, format="PNG")
+                return base64.b64encode(output.getvalue()).decode()
+            background = AwardsHandler.register_asset(None, {"_body": {"kind": "BACKGROUND", "name": "A4",
+                "objectKey": "backgrounds/a4.png", "mediaType": "image/png", "widthPx": 2481, "heightPx": 3508}})
+            signature = AwardsHandler.register_asset(None, {"_body": {"kind": "SIGNATURE", "name": "Manager",
+                "objectKey": "signatures/manager.png", "mediaType": "image/png", "widthPx": 1200, "heightPx": 360}})
+            AwardsHandler.asset_content(None, {"assetId": background["id"], "_body": {"contentBase64": png(24, 32, "white")}})
+            AwardsHandler.asset_content(None, {"assetId": signature["id"], "_body": {"contentBase64": png(24, 8, "black")}})
+            award = AwardsHandler.save_award(None, {"_body": {"programmeSlug": "regional-ota", "code": "LOCAL-10",
+                "name": "Local Ten", "category": "ACTIVATOR", "condition": {"kind": "QSO_COUNT", "operator": "GTE", "value": 1},
+                "levels": [{"id": "10", "threshold": 1}], "backgroundAsset": background,
+                "printSpec": {"page": "A4", "orientation": "PORTRAIT", "dpi": 150}, "template": self._template()}})
+            award = AwardsHandler.submit_award(None, {"awardId": award["id"]})
+            award = AwardsHandler.review_award(None, {"awardId": award["id"], "_body": {"decision": "APPROVED", "reviewerId": "admin"}})
+            award = AwardsHandler.publish_award(None, {"awardId": award["id"], "_body": {"effectiveFrom": "2026-01-01T00:00:00Z", "publisherId": "admin"}})
+            request = AwardsHandler.request_award(None, {"_body": {"awardId": award["id"], "levelId": "10", "subjectId": "operator-1",
+                "callsign": "EA7TEST", "personName": "Test Operator", "facts": {"qsoCount": 1}}})
+            issuance = AwardsHandler.issue_request(None, {"requestId": request["id"], "_body": {"managerName": "Award Manager", "signatureAssetId": signature["id"]}})
+            self.assertTrue(issuance["artifact"]["downloadReady"])
+            self.assertGreater(issuance["artifact"]["byteSize"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
