@@ -442,6 +442,7 @@ class AwardsHandler(JsonHandler):
         if not rendered:
             raise ValueError("certificate assets are not available or the PDF renderer is not installed")
         issuance["artifact"].update(rendered)
+        AwardsHandler.store.event("awards.rendered.v1", "award_issuance", issuance["id"], issuance)
         return issuance
 
     @staticmethod
