@@ -4,6 +4,7 @@ from http.server import ThreadingHTTPServer
 from typing import Any
 
 from common import JsonHandler, Store, new_id, now, page_result, require, verify_token
+from awards import AwardsHandler
 
 
 class ActivityHandler(JsonHandler):
@@ -76,7 +77,13 @@ ActivityHandler.routes = {
     ("GET", "/v1/activations/{activationId}"): ActivityHandler.get_activation,
     ("POST", "/v1/activations/{activationId}/qsos"): ActivityHandler.add_qso,
     ("POST", "/v1/activations/{activationId}/close"): ActivityHandler.close_activation,
+    **AwardsHandler.routes,
 }
+
+# Activity and award execution share one bounded service and one durable
+# service-state/outbox stream. Awards still keep their own named buckets and
+# API paths, but are intentionally exposed through this process on port 8004.
+AwardsHandler.store = ActivityHandler.store
 
 
 if __name__ == "__main__":
