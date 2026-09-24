@@ -8,7 +8,7 @@ from common import JsonHandler, Store, new_id, now, require
 
 class ActivityHandler(JsonHandler):
     service = "activity-service"
-    store = Store()
+    store = Store("activity", "CORE_DATABASE_URL")
 
     @staticmethod
     def create_activation(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
@@ -63,4 +63,3 @@ ActivityHandler.routes = {
 
 if __name__ == "__main__":
     ThreadingHTTPServer(("0.0.0.0", 8004), ActivityHandler).serve_forever()
-
