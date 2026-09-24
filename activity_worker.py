@@ -18,14 +18,14 @@ def process_adif(repo: ActivityRepository, payload: dict[str, Any]) -> None:
     content = ObjectStore().get(record["bucket"], record["objectKey"])
     if content is None:
         repo.finish_import(import_id, 0, 0, 1, ["uploaded object is not available"], "FAILED")
-        repo.create_notification(record["activationId"], "ADIF_IMPORT_FAILED", {"importId": import_id, "reason": "object unavailable"})
+        repo.create_notification(record["activationId"], "ADIF_IMPORT_FAILED", {"importId": import_id, "reason": "object unavailable"}, f"adif:{import_id}:failed")
         return
     try:
         ObjectStore.scan_content(content, record["filename"])
         rows = parse_adif(content.decode("utf-8", errors="strict"))
     except Exception as exc:
         repo.finish_import(import_id, 0, 0, 1, [str(exc)], "FAILED")
-        repo.create_notification(record["activationId"], "ADIF_IMPORT_FAILED", {"importId": import_id, "reason": str(exc)})
+        repo.create_notification(record["activationId"], "ADIF_IMPORT_FAILED", {"importId": import_id, "reason": str(exc)}, f"adif:{import_id}:failed")
         return
     activation = repo.get_activation(record["activationId"])
     normalized = []
@@ -40,9 +40,9 @@ def process_adif(repo: ActivityRepository, payload: dict[str, Any]) -> None:
     accepted = repo.insert_qso_batch(record["activationId"], normalized) if normalized else []
     result = repo.finish_import(import_id, len(rows), len(accepted), len(rows) - len(accepted) + len(errors), errors)
     if errors or len(accepted) != len(rows):
-        repo.create_notification(activation["operatorId"], "ADIF_IMPORT_COMPLETED_WITH_ERRORS", {"importId": import_id, "result": result})
+        repo.create_notification(activation["operatorId"], "ADIF_IMPORT_COMPLETED_WITH_ERRORS", {"importId": import_id, "result": result}, f"adif:{import_id}:completed")
     else:
-        repo.create_notification(activation["operatorId"], "ADIF_IMPORT_COMPLETED", {"importId": import_id, "result": result})
+        repo.create_notification(activation["operatorId"], "ADIF_IMPORT_COMPLETED", {"importId": import_id, "result": result}, f"adif:{import_id}:completed")
 
 
 def process_award_recalculation(repo: ActivityRepository, payload: dict[str, Any]) -> None:
@@ -61,7 +61,8 @@ def process_award_recalculation(repo: ActivityRepository, payload: dict[str, Any
             levels = [{**level, "eligible": condition_met and progress >= float(level["threshold"])} for level in award.get("levels", [])]
             repo.save_progress(award, subject_id, award.get("category", "HUNTER"), facts, {"conditionMet": condition_met, "metric": award.get("achievementMetric", "QSO_COUNT"), "progress": progress, "levels": levels, "ruleVersion": award.get("version", 1)})
             if any(level.get("eligible") for level in levels):
-                repo.create_notification(subject_id, "AWARD_QUALIFIED", {"awardId": award["id"], "awardCode": award["code"], "levels": levels})
+                eligible_level_key = ",".join(str(level["id"]) for level in levels if level.get("eligible"))
+                repo.create_notification(subject_id, "AWARD_QUALIFIED", {"awardId": award["id"], "awardCode": award["code"], "levels": levels}, f"award-qualified:{award['id']}:{award.get('version', 1)}:{subject_id}:{eligible_level_key}")
 
 
 def process_pdf(repo: ActivityRepository, payload: dict[str, Any]) -> None:

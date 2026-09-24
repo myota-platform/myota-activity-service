@@ -414,13 +414,19 @@ class ActivityRepository:
                                      (body["decision"], body["reviewedBy"], body.get("reviewNote"), correction_id)).fetchone()
             return {"id": self._iso(row["id"]), "qsoId": self._iso(row["qso_id"]), "requestedBy": row["requested_by"], "reason": row["reason"], "proposedValues": row["proposed_values"], "status": row["status"], "reviewedBy": row.get("reviewed_by"), "reviewNote": row.get("review_note"), "reviewedAt": self._iso(row.get("reviewed_at"))}
 
-    def create_notification(self, recipient_id: str, notification_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def create_notification(self, recipient_id: str, notification_type: str, payload: dict[str, Any], deduplication_key: str | None = None) -> dict[str, Any]:
         with self.transaction() as connection:
             notification_id = new_id()
-            row = connection.execute("INSERT INTO activity_notification(id,recipient_id,notification_type,payload) VALUES (%s,%s,%s,%s) RETURNING *",
-                                     (notification_id, recipient_id, notification_type, self._json(payload))).fetchone()
-            self._job(connection, "NOTIFICATION_SEND", {"notificationId": notification_id}, f"notification:{notification_id}")
-            return {"id": self._iso(row["id"]), "recipientId": row["recipient_id"], "type": row["notification_type"], "payload": row["payload"], "status": row["status"], "createdAt": self._iso(row["created_at"])}
+            row = connection.execute("INSERT INTO activity_notification(id,recipient_id,notification_type,payload,deduplication_key) VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING *",
+                                     (notification_id, recipient_id, notification_type, self._json(payload), deduplication_key)).fetchone()
+            if row is None and deduplication_key:
+                row = connection.execute("SELECT * FROM activity_notification WHERE deduplication_key=%s", (deduplication_key,)).fetchone()
+            if row is None:
+                raise RuntimeError("notification insert did not return a row")
+            actual_id = self._iso(row["id"])
+            if actual_id == notification_id:
+                self._job(connection, "NOTIFICATION_SEND", {"notificationId": actual_id}, f"notification:{actual_id}")
+            return {"id": actual_id, "recipientId": row["recipient_id"], "type": row["notification_type"], "payload": row["payload"], "status": row["status"], "createdAt": self._iso(row["created_at"])}
 
     def rebuild_statistics(self, programme: str | None = None) -> dict[str, Any]:
         with self.transaction() as connection:

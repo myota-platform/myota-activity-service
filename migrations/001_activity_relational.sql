@@ -228,4 +228,6 @@ CREATE TABLE IF NOT EXISTS activity_notification (
   created_at timestamptz NOT NULL DEFAULT now(),
   delivered_at timestamptz
 );
+ALTER TABLE activity_notification ADD COLUMN IF NOT EXISTS deduplication_key text;
+CREATE UNIQUE INDEX IF NOT EXISTS activity_notification_dedupe_idx ON activity_notification (deduplication_key) WHERE deduplication_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS activity_notification_recipient_idx ON activity_notification (recipient_id, status, created_at DESC);

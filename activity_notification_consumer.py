@@ -30,7 +30,7 @@ async def main() -> None:
     async def handle(event: dict[str, Any]) -> None:
         recipient, kind = recipient_and_kind(event)
         if recipient and kind:
-            repo.create_notification(str(recipient), kind, {"eventType": event.get("eventType"), "eventId": event.get("eventId"), "payload": event.get("payload")})
+            repo.create_notification(str(recipient), kind, {"eventType": event.get("eventType"), "eventId": event.get("eventId"), "payload": event.get("payload")}, f"event:{event.get('eventId')}")
 
     await consume_forever("activity-notifications", "myota.events.>", repo.dsn, handle)
 
