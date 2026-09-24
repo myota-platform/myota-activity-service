@@ -322,4 +322,4 @@ AwardsHandler.routes = {
 
 
 if __name__ == "__main__":
-    ThreadingHTTPServer(("0.0.0.0", 8005), AwardsHandler).serve_forever()
+    ThreadingHTTPServer(("0.0.0.0", 8004), AwardsHandler).serve_forever()
