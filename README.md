@@ -11,7 +11,7 @@ This repository is a runnable vertical-slice bootstrap for the service repositor
 - Geodata lifecycle: imported candidate → community proposal → approver review → approved entity.
 - Provenance-aware imports with adapter metadata for ParkServe, OSM, government GIS and manual proposals.
 - Activation and QSO primitives with idempotency keys and audit events.
-- Programme-owned hunter/activator awards, nested conditions, levels, MinIO-backed assets, requests and issuance records are exposed by the same service on port 8004 under `/v1/awards`.
+- Programme-owned hunter/activator awards, nested conditions, levels, server-side progress, MinIO/S3-backed assets, certificate rendering, participant requests and permanent issuance records are exposed by the same service on port 8004 under `/v1/awards`.
 - Universal themed frontend with verified/candidate map distinction.
 - OpenAPI and event contracts, ADRs, migration notes, health endpoints and local deployment manifests.
 
