@@ -54,12 +54,16 @@ class ObjectStore:
             from io import BytesIO
             from minio.error import S3Error
             try:
-                if not client.bucket_exists(bucket):
-                    client.make_bucket(bucket)
+                self._ensure_bucket(client, bucket)
                 client.put_object(bucket, object_key, BytesIO(content), len(content), content_type=content_type)
             except S3Error as exc:
                 raise RuntimeError(f"object storage upload failed: {exc.code}") from exc
         return {"sha256": checksum, "size": len(content), "storedAt": object_key}
+
+    @staticmethod
+    def _ensure_bucket(client: object, bucket: str) -> None:
+        if not client.bucket_exists(bucket):
+            client.make_bucket(bucket)
 
     def get(self, bucket: str, object_key: str) -> bytes | None:
         if self.local_root:
@@ -83,6 +87,8 @@ class ObjectStore:
         if self.local_root:
             return None
         client = self._minio()
+        if client:
+            self._ensure_bucket(client, bucket)
         return client.presigned_put_object(bucket, object_key, expires=timedelta(minutes=15)) if client else None
 
     def presigned_get(self, bucket: str, object_key: str) -> str | None:
