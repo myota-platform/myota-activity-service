@@ -3,12 +3,29 @@ from __future__ import annotations
 from http.server import ThreadingHTTPServer
 from typing import Any
 
-from common import JsonHandler, Store, new_id, now, require
+from common import JsonHandler, Store, new_id, now, page_result, require, verify_token
 
 
 class ActivityHandler(JsonHandler):
     service = "activity-service"
     store = Store("activity", "CORE_DATABASE_URL")
+
+    @staticmethod
+    def list_activations(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
+        if p.get("_http"):
+            authorization = p.get("Authorization", "")
+            if not authorization.startswith("Bearer "):
+                raise PermissionError("Bearer authentication is required")
+            claims = verify_token(authorization[7:])
+            scopes = set(claims.get("scp", []))
+            if not {"*", "activity.read", "activity.admin"}.intersection(scopes):
+                raise PermissionError("activity read scope is required")
+        from urllib.parse import parse_qs, urlparse
+        query = parse_qs(urlparse(p.get("_path", "")).query)
+        items = list(ActivityHandler.store.items.values())
+        if query.get("programme"):
+            items = [a for a in items if a.get("programmeSlug") == query["programme"][0]]
+        return page_result(items, query)
 
     @staticmethod
     def create_activation(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
@@ -54,6 +71,7 @@ class ActivityHandler(JsonHandler):
 
 
 ActivityHandler.routes = {
+    ("GET", "/v1/activations"): ActivityHandler.list_activations,
     ("POST", "/v1/activations"): ActivityHandler.create_activation,
     ("GET", "/v1/activations/{activationId}"): ActivityHandler.get_activation,
     ("POST", "/v1/activations/{activationId}/qsos"): ActivityHandler.add_qso,
