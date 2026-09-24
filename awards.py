@@ -1,8 +1,8 @@
 """Programme-owned award definitions, achievement evaluation, and issuance.
 
-Award metadata and immutable issuance records live in PostgreSQL-backed service
-state; binary backgrounds, signatures, and generated certificates are addressed
-as objects in the configured S3-compatible store (MinIO locally).
+Award metadata, progress, requests, and immutable issuance records live in
+service-owned relational tables; binary backgrounds, signatures, and generated
+certificates are addressed as objects in the configured S3-compatible store.
 """
 from __future__ import annotations
 
@@ -148,6 +148,7 @@ def _validate_elements(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
 class AwardsHandler(JsonHandler):
     service = "awards-service"
     store = Store("awards", "CORE_DATABASE_URL")
+    repository: Any = None
 
     @staticmethod
     def _authorize(p: dict[str, str], scopes: set[str]) -> None:
@@ -163,11 +164,22 @@ class AwardsHandler(JsonHandler):
 
     @staticmethod
     def _bucket(name: str) -> dict[str, Any]:
+        if AwardsHandler.repository is not None and AwardsHandler.repository.durable:
+            return {str(item["id"]): item for item in AwardsHandler.repository.list_collection(name)}
         return AwardsHandler.store.data.setdefault(name, {})
 
     @staticmethod
     def _award(award_id: str) -> dict[str, Any]:
+        if AwardsHandler.repository is not None and AwardsHandler.repository.durable:
+            return AwardsHandler.repository.get_collection_record("definitions", award_id)
         return AwardsHandler._bucket("definitions")[award_id]
+
+    @staticmethod
+    def _save(collection: str, record: dict[str, Any]) -> dict[str, Any]:
+        if AwardsHandler.repository is not None and AwardsHandler.repository.durable:
+            return AwardsHandler.repository.save_collection(collection, record)
+        AwardsHandler._bucket(collection)[record["id"]] = record
+        return record
 
     @staticmethod
     def _claims(p: dict[str, str]) -> dict[str, Any]:
@@ -180,6 +192,8 @@ class AwardsHandler(JsonHandler):
 
     @staticmethod
     def subject_facts(award: dict[str, Any], subject_id: str) -> dict[str, Any]:
+        if AwardsHandler.repository is not None and AwardsHandler.repository.durable:
+            return AwardsHandler.repository.subject_facts(award["programmeSlug"], subject_id, award.get("category", "HUNTER"))
         activations = [item for item in AwardsHandler.store.items.values()
                        if item.get("programmeSlug") == award["programmeSlug"]]
         if award.get("category") == "ACTIVATOR":
@@ -244,12 +258,13 @@ class AwardsHandler(JsonHandler):
             raise ValueError("only draft awards can be edited")
         record = {**(existing or {}), "id": record_id, "programmeSlug": body["programmeSlug"], "code": body["code"],
                   "name": body["name"], "description": body.get("description", ""), "category": category,
+                  "version": int(body.get("version", (existing or {}).get("version", 1))),
                   "achievementMetric": body.get("achievementMetric", "QSO_COUNT"), "condition": body["condition"],
                   "levels": levels, "backgroundAsset": background, "printSpec": body.get("printSpec", {"page": "A4", "orientation": "PORTRAIT", "dpi": 300}),
                   "template": template, "status": existing.get("status", "DRAFT") if existing else "DRAFT",
                   "updatedAt": now(), "createdAt": existing.get("createdAt", now()) if existing else now()}
         record["printReadiness"] = _print_spec(background, record["printSpec"])
-        AwardsHandler._bucket("definitions")[record_id] = record
+        AwardsHandler._save("definitions", record)
         AwardsHandler.store.event("awards.definition.saved.v1", "award", record_id, record)
         return {**record, "_status": 201 if not existing else 200}
 
@@ -260,6 +275,7 @@ class AwardsHandler(JsonHandler):
         if award["status"] not in {"DRAFT", "CHANGES_REQUESTED"}:
             raise ValueError("only draft awards can be submitted")
         award["status"], award["submittedAt"] = "UNDER_REVIEW", now()
+        AwardsHandler._save("definitions", award)
         return award
 
     @staticmethod
@@ -270,6 +286,7 @@ class AwardsHandler(JsonHandler):
         if award["status"] != "UNDER_REVIEW" or body["decision"] not in {"APPROVED", "CHANGES_REQUESTED"}:
             raise ValueError("award must be under review and decision must be APPROVED or CHANGES_REQUESTED")
         award["status"], award["review"] = body["decision"], {"reviewerId": body["reviewerId"], "note": body.get("note"), "reviewedAt": now()}
+        AwardsHandler._save("definitions", award)
         return award
 
     @staticmethod
@@ -282,8 +299,34 @@ class AwardsHandler(JsonHandler):
         if not award.get("printReadiness", {}).get("printReady"):
             raise ValueError("background image does not meet the selected A4/Letter print profile")
         award.update({"status": "PUBLISHED", "effectiveFrom": body["effectiveFrom"], "publisherId": body["publisherId"], "publishedAt": now()})
+        AwardsHandler._save("definitions", award)
         AwardsHandler.store.event("awards.definition.published.v1", "award", award["id"], award)
         return award
+
+    @staticmethod
+    def retire_award(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
+        AwardsHandler._authorize(p, {"awards.admin"})
+        award = AwardsHandler._award(p["awardId"])
+        body = p.get("_body", {})
+        require(body, "retiredAt", "retiredBy")
+        if award.get("status") not in {"PUBLISHED", "APPROVED"}:
+            raise ValueError("only published or approved awards can be retired")
+        award.update({"status": "RETIRED", "retiredAt": body["retiredAt"], "retiredBy": body["retiredBy"]})
+        AwardsHandler._save("definitions", award)
+        return award
+
+    @staticmethod
+    def recalculate_award(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
+        AwardsHandler._authorize(p, {"awards.admin"})
+        award = AwardsHandler._award(p["awardId"])
+        body = p.get("_body", {})
+        subjects = body.get("subjectIds") or []
+        if not isinstance(subjects, list):
+            raise ValueError("subjectIds must be an array")
+        if AwardsHandler.repository is not None and AwardsHandler.repository.durable:
+            job_id = AwardsHandler.repository.enqueue_job("AWARD_RECALCULATE", {"programmeSlug": award["programmeSlug"], "subjectIds": subjects, "awardId": award["id"], "ruleVersion": award.get("version", 1)}, f"award-recalculate:{award['id']}:{award.get('version', 1)}:{','.join(sorted(map(str, subjects)))}")
+            return {"awardId": award["id"], "ruleVersion": award.get("version", 1), "jobId": job_id, "status": "QUEUED", "_status": 202}
+        return {"awardId": award["id"], "ruleVersion": award.get("version", 1), "status": "QUEUED", "_status": 202}
 
     @staticmethod
     def register_asset(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
@@ -299,7 +342,7 @@ class AwardsHandler(JsonHandler):
                  "objectStorageEndpoint": os.environ.get("MYOTA_OBJECT_STORAGE_ENDPOINT", "http://minio:9000"),
                  "contentStatus": "MISSING",
                  "createdAt": now()}
-        AwardsHandler._bucket("assets")[asset["id"]] = asset
+        AwardsHandler._save("assets", asset)
         return {**asset, "_status": 201}
 
     @staticmethod
@@ -319,8 +362,10 @@ class AwardsHandler(JsonHandler):
         body = p["_body"]
         require(body, "contentBase64")
         content = decode_base64(body["contentBase64"])
+        ObjectStore.scan_content(content, asset["objectKey"])
         stored = ObjectStore().put(asset["bucket"], asset["objectKey"], content, asset["mediaType"])
         asset.update({"contentStatus": "STORED", "contentSha256": stored["sha256"], "contentSize": stored["size"], "storedAt": now()})
+        AwardsHandler._save("assets", asset)
         return asset
 
     @staticmethod
@@ -356,7 +401,10 @@ class AwardsHandler(JsonHandler):
             AwardsHandler._authorize(p, {"awards.read", "awards.request", "awards.admin", "identity.me"})
         award = AwardsHandler._award(award_id)
         facts = AwardsHandler.subject_facts(award, subject_id)
-        return AwardsHandler.evaluate(None, {"_body": {"awardId": award_id, "subjectId": subject_id, "facts": facts}})
+        result = AwardsHandler.evaluate(None, {"_body": {"awardId": award_id, "subjectId": subject_id, "facts": facts}})
+        if AwardsHandler.repository is not None and AwardsHandler.repository.durable:
+            AwardsHandler.repository.save_progress(award, subject_id, award.get("category", "HUNTER"), facts, result)
+        return result
 
     @staticmethod
     def request_award(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
@@ -383,7 +431,7 @@ class AwardsHandler(JsonHandler):
         request = {"id": new_id(), "awardId": award["id"], "programmeSlug": award["programmeSlug"], "levelId": body["levelId"],
                    "subjectId": body["subjectId"], "category": award["category"], "callsign": body["callsign"], "personName": body["personName"],
                    "facts": facts, "status": "REQUESTED", "requestedAt": now()}
-        AwardsHandler._bucket("requests")[request["id"]] = request
+        AwardsHandler._save("requests", request)
         AwardsHandler.store.event("awards.request.created.v1", "award_request", request["id"], request)
         return {**request, "_status": 201}
 
@@ -411,7 +459,7 @@ class AwardsHandler(JsonHandler):
             raise ValueError("a registered signature asset is required")
         issued_at = now()
         issuance = {"id": new_id(), "requestId": request["id"], "awardId": award["id"], "programmeSlug": award["programmeSlug"],
-                    "levelId": request["levelId"], "category": request["category"], "callsign": request["callsign"],
+                    "levelId": request["levelId"], "category": request["category"], "subjectId": request["subjectId"], "callsign": request["callsign"],
                     "personName": request["personName"], "awardName": award["name"], "dateObtained": body.get("dateObtained", issued_at),
                     "managerName": body["managerName"], "signatureAssetId": signature["id"], "issuedAt": issued_at,
                     "artifact": {"storage": "MINIO", "bucket": os.environ.get("MYOTA_CERTIFICATE_BUCKET", "myota-certificates"),
@@ -426,6 +474,8 @@ class AwardsHandler(JsonHandler):
             issuance["artifact"]["renderStatus"] = "WAITING_FOR_ASSETS"
         AwardsHandler._bucket("issuances")[issuance["id"]] = issuance
         request.update({"status": "ISSUED", "issuedAwardId": issuance["id"], "issuedAt": issued_at})
+        AwardsHandler._save("requests", request)
+        AwardsHandler._save("issuances", issuance)
         AwardsHandler.store.event("awards.issued.v1", "award_issuance", issuance["id"], issuance)
         return {**issuance, "_status": 201}
 
@@ -442,6 +492,7 @@ class AwardsHandler(JsonHandler):
         if not rendered:
             raise ValueError("certificate assets are not available or the PDF renderer is not installed")
         issuance["artifact"].update(rendered)
+        AwardsHandler._save("issuances", issuance)
         AwardsHandler.store.event("awards.rendered.v1", "award_issuance", issuance["id"], issuance)
         return issuance
 
@@ -467,6 +518,8 @@ AwardsHandler.routes = {
     ("POST", "/v1/awards/{awardId}/submit"): AwardsHandler.submit_award,
     ("POST", "/v1/awards/{awardId}/review"): AwardsHandler.review_award,
     ("POST", "/v1/awards/{awardId}/publish"): AwardsHandler.publish_award,
+    ("POST", "/v1/awards/{awardId}/retire"): AwardsHandler.retire_award,
+    ("POST", "/v1/awards/{awardId}/recalculate"): AwardsHandler.recalculate_award,
     ("POST", "/v1/awards/assets/{assetId}/upload-url"): AwardsHandler.asset_upload_url,
     ("POST", "/v1/awards/assets/{assetId}/content"): AwardsHandler.asset_content,
     ("POST", "/v1/awards/evaluate"): AwardsHandler.evaluate,
