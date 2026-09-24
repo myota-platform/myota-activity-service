@@ -12,10 +12,31 @@ import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Iterator
 
 MAX_BODY_BYTES = int(os.environ.get("MYOTA_MAX_BODY_BYTES", "1048576"))
+
+
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """Thread-per-request server with an explicit concurrency ceiling."""
+
+    daemon_threads = True
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._request_slots = threading.BoundedSemaphore(max(1, int(os.environ.get("MYOTA_HTTP_MAX_WORKERS", "64"))))
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        self._request_slots.acquire()
+
+        def run() -> None:
+            try:
+                self.process_request_thread(request, client_address)
+            finally:
+                self._request_slots.release()
+
+        threading.Thread(target=run, daemon=True).start()
 
 
 def now() -> str:
@@ -98,11 +119,18 @@ def page_result(items: list[Any], query: dict[str, list[str]] | None = None) -> 
 
 
 class Store:
-    """Service-owned state with optional PostgreSQL durability and a durable outbox."""
+    """Compatibility store for small services and in-memory tests.
 
-    def __init__(self, service: str = "service", dsn_env: str | None = None) -> None:
+    Activity production data is owned by ``activity_repository``.  Its Store
+    instance deliberately disables JSON state persistence so a request can
+    never rewrite an entire service snapshot.
+    """
+
+    def __init__(self, service: str = "service", dsn_env: str | None = None,
+                 persist_state: bool = True) -> None:
         self.service = service
         self.dsn = os.environ.get(dsn_env or "", "") if dsn_env else ""
+        self.persist_state = persist_state
         self.items: dict[str, dict[str, Any]] = {}
         self.events: list[dict[str, Any]] = []
         self.data: dict[str, Any] = {}
@@ -125,7 +153,8 @@ class Store:
         last: Exception | None = None
         for attempt in range(1, 6):
             try:
-                self._pool = ConnectionPool(self.dsn, min_size=1, max_size=10, open=True,
+                pool_max = max(1, int(os.environ.get("MYOTA_DB_POOL_MAX", "10")))
+                self._pool = ConnectionPool(self.dsn, min_size=1, max_size=pool_max, open=True,
                                             kwargs={"connect_timeout": 5})
                 return self._pool
             except Exception as exc:  # pragma: no cover
@@ -147,7 +176,7 @@ class Store:
                 raise
 
     def hydrate(self) -> None:
-        if self._hydrated or not self.durable:
+        if self._hydrated or not self.durable or not self.persist_state:
             self._hydrated = True
             return
         with self.transaction() as connection:
@@ -161,7 +190,7 @@ class Store:
         self._hydrated = True
 
     def persist(self) -> None:
-        if not self.durable:
+        if not self.durable or not self.persist_state:
             return
         with self.transaction() as connection:
             connection.execute(

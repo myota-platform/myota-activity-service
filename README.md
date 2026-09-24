@@ -2,7 +2,11 @@
 
 MyOTA is a programme-agnostic platform for outdoor activation programmes. MPOTA is represented as a configured programme, not as the platform itself. No rules or charter text are copied from POTA or any other programme: every programme supplies its own configuration, policy, eligibility, awards and public charter.
 
-This repository is a runnable vertical-slice bootstrap for the service repositories described in [`docs/repository-map.md`](docs/repository-map.md). It contains four independently runnable Python services, an API-first contract, a universal browser UI, PostGIS migrations, and Kubernetes/Helm deployment assets.
+This repository owns the activity bounded context: activations, normalized QSOs,
+ADIF ingestion, programme-owned awards, progress, certificates and execution
+statistics. Activity and awards intentionally share one API process and port
+(`8004`). Deployment and migration orchestration live in `myota-deploy`; the
+versioned activity migration in `migrations/` is copied and applied there.
 
 ## What works now
 
@@ -10,12 +14,24 @@ This repository is a runnable vertical-slice bootstrap for the service repositor
 - Programme configuration: programme-owned entity types, rules, minimum QSOs, awards, theme and optional OIDC settings.
 - Geodata lifecycle: imported candidate → community proposal → approver review → approved entity.
 - Provenance-aware imports with adapter metadata for ParkServe, OSM, government GIS and manual proposals.
-- Activation and QSO primitives with idempotency keys and audit events.
+- Relational, indexed activation/QSO storage with deduplication, idempotency,
+  aggregate facts and PostgreSQL `COPY` batch ingestion; the generic JSONB
+  state store is not used in durable activity mode.
+- Activation validity windows, location/rule checks, verified callsign inputs,
+  normalization, band/mode validation, correction workflows and close-time
+  programme rule evaluation.
+- ADIF upload safety gate, S3/MinIO object storage, asynchronous parsing and
+  import result tracking.
 - Programme-owned hunter/activator awards, nested conditions, levels, server-side progress, MinIO/S3-backed assets, certificate rendering, participant requests and permanent issuance records are exposed by the same service on port 8004 under `/v1/awards`.
 - Universal themed frontend with verified/candidate map distinction.
-- OpenAPI and event contracts, ADRs, migration notes, health endpoints and local deployment manifests.
+- Bounded API concurrency, bounded PostgreSQL pools, durable outbox jobs and
+  background workers for ADIF, award recalculation, certificate rendering,
+  statistics and notifications.
 
-The default test/runtime adapter is in-memory so the slice can be exercised without third-party Python packages. PostgreSQL/PostGIS is the production storage target and is defined in `db/migrations/`.
+The unit-test adapter remains in-memory for fast contract tests. When
+`CORE_DATABASE_URL` is configured, `activity_repository.py` uses only the
+activity-owned relational schema and never rewrites a service-wide JSON state
+snapshot.
 
 ## Run the vertical slice
 
@@ -26,7 +42,10 @@ python3 services/dev_server.py
 
 Open <http://127.0.0.1:8004/healthz> for the activity service. Activations and awards intentionally share this port; the gateway exposes the same paths without a second awards service.
 
-For a containerized PostGIS environment, use `docker compose up --build` after starting Colima. The image uses the same service code with `SERVICE=identity|programmes|geodata|activity`.
+For a containerized PostGIS environment, start Colima and use the Compose stack
+in `myota-deploy`. It runs the API on port 8004, activity workers, the
+notification consumer, PostgreSQL/PostGIS, NATS and MinIO. Helm deploys three
+stateless activity API replicas by default and separately scales workers.
 
 ## Architecture
 

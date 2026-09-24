@@ -1,4 +1,4 @@
-from http.server import ThreadingHTTPServer
+from common import BoundedThreadingHTTPServer
 from activity import ActivityHandler
 
-ThreadingHTTPServer(("0.0.0.0", 8004), ActivityHandler).serve_forever()
+BoundedThreadingHTTPServer(("0.0.0.0", 8004), ActivityHandler).serve_forever()

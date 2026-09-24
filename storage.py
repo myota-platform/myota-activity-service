@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import urllib.request
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -34,6 +35,33 @@ class ObjectStore:
 
     def available(self) -> bool:
         return bool(self.local_root or self._minio())
+
+    @staticmethod
+    def scan_content(content: bytes, filename: str = "upload") -> dict[str, object]:
+        """Run the local safety gate and optionally ask a ClamAV HTTP sidecar.
+
+        The EICAR signature is intentionally detected even in development so
+        tests can prove that infected uploads never reach object storage. In
+        production, ``MYOTA_CLAMAV_URL`` should point at a ClamAV scanning
+        sidecar or gateway; failure is fail-closed unless explicitly disabled
+        for a local development environment.
+        """
+        max_bytes = int(os.environ.get("MYOTA_UPLOAD_MAX_BYTES", str(25 * 1024 * 1024)))
+        if len(content) > max_bytes:
+            raise ValueError(f"{filename} exceeds the configured upload limit")
+        if b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*" in content:
+            raise ValueError("malware scan rejected the upload")
+        scanner_url = os.environ.get("MYOTA_CLAMAV_URL", "").strip()
+        if scanner_url:
+            request = urllib.request.Request(scanner_url, data=content, method="POST",
+                                              headers={"Content-Type": "application/octet-stream", "X-Upload-Name": filename})
+            try:
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    if response.status >= 300:
+                        raise ValueError("malware scanner rejected the upload")
+            except Exception as exc:
+                raise ValueError("malware scanner is unavailable; upload was not stored") from exc
+        return {"status": "CLEAN", "sha256": hashlib.sha256(content).hexdigest(), "size": len(content)}
 
     def _local_path(self, bucket: str, object_key: str) -> Path:
         if not self.local_root:
