@@ -14,12 +14,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 
 from activity_domain import iso_timestamp, parse_timestamp
-from common import new_id, now
+from common import new_id, now, require_durable_database
 
 
 class ActivityRepository:
     def __init__(self, dsn_env: str = "CORE_DATABASE_URL") -> None:
         self.dsn = os.environ.get(dsn_env, "")
+        require_durable_database(dsn_env, self.dsn)
         self.pool: Any = None
 
     @property

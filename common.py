@@ -18,6 +18,13 @@ from typing import Any, Callable, Iterator
 MAX_BODY_BYTES = int(os.environ.get("MYOTA_MAX_BODY_BYTES", "1048576"))
 
 
+def require_durable_database(dsn_env: str | None, dsn: str) -> None:
+    """Fail fast when a configured runtime must not use process memory."""
+    required = os.environ.get("MYOTA_REQUIRE_DURABILITY", "").strip().lower() in {"1", "true", "yes", "on"}
+    if required and dsn_env and not dsn:
+        raise RuntimeError(f"{dsn_env} is required when MYOTA_REQUIRE_DURABILITY is enabled")
+
+
 class BoundedThreadingHTTPServer(ThreadingHTTPServer):
     """Thread-per-request server with an explicit concurrency ceiling."""
 
@@ -130,6 +137,7 @@ class Store:
                  persist_state: bool = True) -> None:
         self.service = service
         self.dsn = os.environ.get(dsn_env or "", "") if dsn_env else ""
+        require_durable_database(dsn_env, self.dsn)
         self.persist_state = persist_state
         self.items: dict[str, dict[str, Any]] = {}
         self.events: list[dict[str, Any]] = []
