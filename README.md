@@ -11,7 +11,7 @@ versioned activity migration in `migrations/` is copied and applied there.
 ## What works now
 
 - Amateur-radio-aware identity: operator/SWL participation, multiple callsigns, one primary callsign, lifecycle and verification fields.
-- Programme configuration: programme-owned entity types, rules, minimum QSOs, awards, theme and optional OIDC settings.
+- Shared entity-category catalogue and programme assignments; activity owns programme execution, QSO rules, minimum QSOs, awards, themes and optional OIDC settings.
 - Geodata lifecycle: imported candidate → community proposal → approver review → approved entity.
 - Provenance-aware imports with adapter metadata for ParkServe, OSM, government GIS and manual proposals.
 - Relational, indexed activation/QSO storage with deduplication, idempotency,
