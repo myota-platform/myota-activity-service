@@ -1,51 +1,59 @@
-"""Small S3-compatible object-store adapter used by activity certificates."""
+"""S3-compatible object storage adapter used by activity and awards."""
 from __future__ import annotations
 
 import base64
 import hashlib
 import os
 import urllib.request
-from datetime import timedelta
 from pathlib import Path
-from urllib.parse import urlsplit
 
 
 class ObjectStore:
-    """Use MinIO/S3 when configured, with a filesystem adapter for local tests."""
+    """Use SeaweedFS or another S3-compatible store, with a test-only filesystem adapter."""
 
     def __init__(self) -> None:
-        self.endpoint = os.environ.get("MYOTA_OBJECT_STORAGE_ENDPOINT", "http://minio:9000")
-        self.access_key = os.environ.get("MYOTA_OBJECT_STORAGE_ACCESS_KEY", "myota-minio")
-        self.secret_key = os.environ.get("MYOTA_OBJECT_STORAGE_SECRET_KEY", "myota-minio-dev-only")
+        self.endpoint = os.environ.get("MYOTA_OBJECT_STORAGE_ENDPOINT", "http://seaweedfs:8333")
+        self.presign_endpoint = os.environ.get("MYOTA_OBJECT_STORAGE_PUBLIC_ENDPOINT", self.endpoint)
+        self.access_key = os.environ.get("MYOTA_OBJECT_STORAGE_ACCESS_KEY", "myota-s3")
+        self.secret_key = os.environ.get("MYOTA_OBJECT_STORAGE_SECRET_KEY", "myota-s3-dev-only")
+        self.region = os.environ.get("MYOTA_OBJECT_STORAGE_REGION", "us-east-1")
+        self.addressing_style = os.environ.get("MYOTA_OBJECT_STORAGE_ADDRESSING_STYLE", "path")
         local_root = os.environ.get("MYOTA_OBJECT_STORAGE_LOCAL_DIR", "")
         self.local_root = Path(local_root) if local_root else None
-        self._client = None
+        self._clients: dict[str, object | None] = {}
 
-    def _minio(self):
-        if self.local_root or self._client is not None:
-            return self._client
+    def _client_for(self, endpoint: str):
+        if endpoint in self._clients:
+            return self._clients[endpoint]
         try:
-            from minio import Minio
+            import boto3
+            from botocore.client import Config
         except ImportError:
+            self._clients[endpoint] = None
             return None
-        parsed = urlsplit(self.endpoint)
-        self._client = Minio(parsed.netloc, access_key=self.access_key, secret_key=self.secret_key,
-                              secure=parsed.scheme == "https")
-        return self._client
+        client = boto3.client(
+            "s3",
+            endpoint_url=endpoint,
+            aws_access_key_id=self.access_key,
+            aws_secret_access_key=self.secret_key,
+            region_name=self.region,
+            config=Config(
+                signature_version="s3v4",
+                s3={"addressing_style": self.addressing_style},
+            ),
+        )
+        self._clients[endpoint] = client
+        return client
+
+    def _client(self):
+        return self._client_for(self.endpoint)
 
     def available(self) -> bool:
-        return bool(self.local_root or self._minio())
+        return bool(self.local_root or self._client())
 
     @staticmethod
     def scan_content(content: bytes, filename: str = "upload") -> dict[str, object]:
-        """Run the local safety gate and optionally ask a ClamAV HTTP sidecar.
-
-        The EICAR signature is intentionally detected even in development so
-        tests can prove that infected uploads never reach object storage. In
-        production, ``MYOTA_CLAMAV_URL`` should point at a ClamAV scanning
-        sidecar or gateway; failure is fail-closed unless explicitly disabled
-        for a local development environment.
-        """
+        """Run the local safety gate and optionally ask a ClamAV HTTP sidecar."""
         max_bytes = int(os.environ.get("MYOTA_UPLOAD_MAX_BYTES", str(25 * 1024 * 1024)))
         if len(content) > max_bytes:
             raise ValueError(f"{filename} exceeds the configured upload limit")
@@ -53,8 +61,12 @@ class ObjectStore:
             raise ValueError("malware scan rejected the upload")
         scanner_url = os.environ.get("MYOTA_CLAMAV_URL", "").strip()
         if scanner_url:
-            request = urllib.request.Request(scanner_url, data=content, method="POST",
-                                              headers={"Content-Type": "application/octet-stream", "X-Upload-Name": filename})
+            request = urllib.request.Request(
+                scanner_url,
+                data=content,
+                method="POST",
+                headers={"Content-Type": "application/octet-stream", "X-Upload-Name": filename},
+            )
             try:
                 with urllib.request.urlopen(request, timeout=10) as response:
                     if response.status >= 300:
@@ -70,60 +82,69 @@ class ObjectStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
+    @staticmethod
+    def _ensure_bucket(client: object, bucket: str) -> None:
+        from botocore.exceptions import ClientError
+
+        try:
+            client.head_bucket(Bucket=bucket)
+            return
+        except ClientError as exc:
+            error = exc.response.get("Error", {})
+            status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            code = str(error.get("Code", ""))
+            if status != 404 and code not in {"404", "NoSuchBucket", "NotFound"}:
+                raise
+        client.create_bucket(Bucket=bucket)
+
     def put(self, bucket: str, object_key: str, content: bytes, content_type: str) -> dict[str, object]:
         checksum = hashlib.sha256(content).hexdigest()
         if self.local_root:
-            path = self._local_path(bucket, object_key)
-            path.write_bytes(content)
+            self._local_path(bucket, object_key).write_bytes(content)
         else:
-            client = self._minio()
+            client = self._client()
             if not client:
-                raise RuntimeError("MinIO SDK is not installed")
-            from io import BytesIO
-            from minio.error import S3Error
-            try:
-                self._ensure_bucket(client, bucket)
-                client.put_object(bucket, object_key, BytesIO(content), len(content), content_type=content_type)
-            except S3Error as exc:
-                raise RuntimeError(f"object storage upload failed: {exc.code}") from exc
+                raise RuntimeError("boto3 is not installed")
+            self._ensure_bucket(client, bucket)
+            client.put_object(Bucket=bucket, Key=object_key, Body=content, ContentType=content_type)
         return {"sha256": checksum, "size": len(content), "storedAt": object_key}
-
-    @staticmethod
-    def _ensure_bucket(client: object, bucket: str) -> None:
-        if not client.bucket_exists(bucket):
-            client.make_bucket(bucket)
 
     def get(self, bucket: str, object_key: str) -> bytes | None:
         if self.local_root:
             path = self._local_path(bucket, object_key)
             return path.read_bytes() if path.exists() else None
-        client = self._minio()
+        client = self._client()
         if not client:
             return None
-        response = None
         try:
-            response = client.get_object(bucket, object_key)
-            return response.read()
+            response = client.get_object(Bucket=bucket, Key=object_key)
+            return response["Body"].read()
         except Exception:
             return None
-        finally:
-            if response:
-                response.close()
-                response.release_conn()
 
     def presigned_put(self, bucket: str, object_key: str) -> str | None:
         if self.local_root:
             return None
-        client = self._minio()
-        if client:
-            self._ensure_bucket(client, bucket)
-        return client.presigned_put_object(bucket, object_key, expires=timedelta(minutes=15)) if client else None
+        internal = self._client()
+        if not internal:
+            return None
+        self._ensure_bucket(internal, bucket)
+        client = self._client_for(self.presign_endpoint)
+        return client.generate_presigned_url(
+            "put_object",
+            Params={"Bucket": bucket, "Key": object_key},
+            ExpiresIn=900,
+        ) if client else None
 
     def presigned_get(self, bucket: str, object_key: str) -> str | None:
         if self.local_root:
             return None
-        client = self._minio()
-        return client.presigned_get_object(bucket, object_key, expires=timedelta(minutes=15)) if client else None
+        client = self._client_for(self.presign_endpoint)
+        return client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": object_key},
+            ExpiresIn=900,
+        ) if client else None
 
 
 def decode_base64(value: str) -> bytes:

@@ -20,9 +20,9 @@ versioned activity migration in `migrations/` is copied and applied there.
 - Activation validity windows, location/rule checks, verified callsign inputs,
   normalization, band/mode validation, correction workflows and close-time
   programme rule evaluation.
-- ADIF upload safety gate, S3/MinIO object storage, asynchronous parsing and
+- ADIF upload safety gate, SeaweedFS-backed S3-compatible object storage, asynchronous parsing and
   import result tracking.
-- Programme-owned hunter/activator awards, nested conditions, levels, server-side progress, MinIO/S3-backed assets, certificate rendering, participant requests and permanent issuance records are exposed by the same service on port 8004 under `/v1/awards`.
+- Programme-owned hunter/activator awards, nested conditions, levels, server-side progress, SeaweedFS/S3-backed assets, certificate rendering, participant requests and permanent issuance records are exposed by the same service on port 8004 under `/v1/awards`.
 - Universal themed frontend with verified/candidate map distinction.
 - Bounded API concurrency, bounded PostgreSQL pools, durable outbox jobs and
   background workers for ADIF, award recalculation, certificate rendering,
@@ -44,7 +44,7 @@ Open <http://127.0.0.1:8004/healthz> for the activity service. Activations and a
 
 For a containerized PostGIS environment, start Colima and use the Compose stack
 in `myota-deploy`. It runs the API on port 8004, activity workers, the
-notification consumer, PostgreSQL/PostGIS, NATS and MinIO. Helm deploys three
+notification consumer, PostgreSQL/PostGIS, NATS and SeaweedFS. Helm deploys three
 stateless activity API replicas by default and separately scales workers.
 
 ## Architecture

@@ -337,9 +337,9 @@ class AwardsHandler(JsonHandler):
             raise ValueError("asset kind must be BACKGROUND or SIGNATURE and mediaType must be an image")
         asset = {"id": body.get("assetId") or new_id(), "kind": body["kind"], "name": body["name"],
                  "objectKey": body["objectKey"], "mediaType": body["mediaType"], "widthPx": int(body["widthPx"]),
-                 "heightPx": int(body["heightPx"]), "sha256": body.get("sha256"), "storage": "MINIO",
+                 "heightPx": int(body["heightPx"]), "sha256": body.get("sha256"), "storage": "S3",
                  "bucket": body.get("bucket") or os.environ.get("MYOTA_OBJECT_STORAGE_BUCKET", "myota-awards"),
-                 "objectStorageEndpoint": os.environ.get("MYOTA_OBJECT_STORAGE_ENDPOINT", "http://minio:9000"),
+                 "objectStorageEndpoint": os.environ.get("MYOTA_OBJECT_STORAGE_PUBLIC_ENDPOINT", os.environ.get("MYOTA_OBJECT_STORAGE_ENDPOINT", "http://seaweedfs:8333")),
                  "contentStatus": "MISSING",
                  "createdAt": now()}
         AwardsHandler._save("assets", asset)
@@ -351,7 +351,7 @@ class AwardsHandler(JsonHandler):
         asset = AwardsHandler._bucket("assets")[p["assetId"]]
         url = ObjectStore().presigned_put(asset["bucket"], asset["objectKey"])
         if not url:
-            raise ValueError("object storage presigned uploads are unavailable; configure MinIO or S3")
+            raise ValueError("object storage presigned uploads are unavailable; configure SeaweedFS or another S3-compatible store")
         return {"assetId": asset["id"], "method": "PUT", "url": url, "expiresInSeconds": 900}
 
     @staticmethod
@@ -462,7 +462,7 @@ class AwardsHandler(JsonHandler):
                     "levelId": request["levelId"], "category": request["category"], "subjectId": request["subjectId"], "callsign": request["callsign"],
                     "personName": request["personName"], "awardName": award["name"], "dateObtained": body.get("dateObtained", issued_at),
                     "managerName": body["managerName"], "signatureAssetId": signature["id"], "issuedAt": issued_at,
-                    "artifact": {"storage": "MINIO", "bucket": os.environ.get("MYOTA_CERTIFICATE_BUCKET", "myota-certificates"),
+                    "artifact": {"storage": "S3", "bucket": os.environ.get("MYOTA_CERTIFICATE_BUCKET", "myota-certificates"),
                                   "objectKey": f"{award['programmeSlug']}/{request['subjectId']}/{award['code']}-{request['levelId']}-{request['id']}.pdf",
                                   "mediaType": "application/pdf", "downloadReady": False},
                     "renderSpec": {"backgroundAsset": award["backgroundAsset"], "printSpec": award["printSpec"],
