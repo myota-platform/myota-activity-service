@@ -8,6 +8,12 @@ statistics. Activity and awards intentionally share one API process and port
 (`8004`). Deployment and migration orchestration live in `myota-deploy`; the
 versioned activity migration in `migrations/` is copied and applied there.
 
+The platform purpose and the distinction between reusable activity capability
+and programme-owned policy are documented in the
+[MyOTA charter](https://github.com/myota-platform/myota-docs/blob/main/docs/project-charter.md).
+The current production-readiness and participant-experience gaps are tracked
+in the [charter gap analysis](https://github.com/myota-platform/myota-docs/blob/main/docs/charter-gap-analysis.md).
+
 ## What works now
 
 - Amateur-radio-aware identity: operator/SWL participation, multiple callsigns, one primary callsign, lifecycle and verification fields.
