@@ -39,6 +39,13 @@ resource for draft edits and lifecycle transitions. The existing submit,
 review, publish, and retire action routes remain deprecated compatibility
 aliases. See the [Phase 1 API resource update record](https://github.com/myota-platform/myota-docs/blob/main/docs/api-phase1-resource-updates.md).
 
+Phase 3 adds preferred resource/job APIs for activation closure, high-volume
+QSO ingestion, correction review, statistics rebuilds, award evaluation and
+historical recalculation, issuance, certificate rendering, and artifact
+retrieval. Jobs use the relational `activity_job` queue, bounded retries, and
+the existing background worker; the legacy action routes remain deprecated
+aliases. See the [Phase 3 activity and award job record](https://github.com/myota-platform/myota-docs/blob/main/docs/api-phase3-activity-award-jobs.md).
+
 The unit-test adapter remains in-memory for fast contract tests. When
 `CORE_DATABASE_URL` is configured, `activity_repository.py` uses only the
 activity-owned relational schema and never rewrites a service-wide JSON state

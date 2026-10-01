@@ -333,6 +333,30 @@ class AwardsHandler(JsonHandler):
         return AwardsHandler.save_award(None, {**p, "_body": {**award, **body, "awardId": p["awardId"]}})
 
     @staticmethod
+    def _queue_job(kind: str, payload: dict[str, Any], idempotency_key: str | None = None) -> dict[str, Any]:
+        if AwardsHandler.repository is not None and AwardsHandler.repository.durable:
+            job_id = AwardsHandler.repository.enqueue_job(kind, payload, idempotency_key)
+            return {"id": job_id, "kind": kind, "payload": payload, "status": "QUEUED", "attempts": 0}
+        jobs = AwardsHandler.store.data.setdefault("jobs", [])
+        if idempotency_key:
+            existing = next((job for job in jobs if job.get("idempotencyKey") == idempotency_key), None)
+            if existing:
+                return existing
+        job = {"id": new_id(), "kind": kind, "payload": payload, "status": "QUEUED", "attempts": 0,
+               "idempotencyKey": idempotency_key, "createdAt": now()}
+        jobs.append(job)
+        return job
+
+    @staticmethod
+    def get_job(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
+        if AwardsHandler.repository is not None and AwardsHandler.repository.durable:
+            return AwardsHandler.repository.get_job(p["jobId"])
+        job = next((item for item in AwardsHandler.store.data.setdefault("jobs", []) if item.get("id") == p["jobId"]), None)
+        if not job:
+            raise KeyError(p["jobId"])
+        return job
+
+    @staticmethod
     def recalculate_award(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
         AwardsHandler._authorize(p, {"awards.admin"})
         award = AwardsHandler._award(p["awardId"])
@@ -340,10 +364,35 @@ class AwardsHandler(JsonHandler):
         subjects = body.get("subjectIds") or []
         if not isinstance(subjects, list):
             raise ValueError("subjectIds must be an array")
-        if AwardsHandler.repository is not None and AwardsHandler.repository.durable:
-            job_id = AwardsHandler.repository.enqueue_job("AWARD_RECALCULATE", {"programmeSlug": award["programmeSlug"], "subjectIds": subjects, "awardId": award["id"], "ruleVersion": award.get("version", 1)}, f"award-recalculate:{award['id']}:{award.get('version', 1)}:{','.join(sorted(map(str, subjects)))}")
-            return {"awardId": award["id"], "ruleVersion": award.get("version", 1), "jobId": job_id, "status": "QUEUED", "_status": 202}
-        return {"awardId": award["id"], "ruleVersion": award.get("version", 1), "status": "QUEUED", "_status": 202}
+        job = AwardsHandler._queue_job("AWARD_RECALCULATE", {"programmeSlug": award["programmeSlug"], "subjectIds": subjects,
+                                                               "awardId": award["id"], "ruleVersion": award.get("version", 1)},
+                                       f"award-recalculate:{award['id']}:{award.get('version', 1)}:{','.join(sorted(map(str, subjects)))}")
+        return {"awardId": award["id"], "ruleVersion": award.get("version", 1), "jobId": job["id"], **job, "_status": 202}
+
+    @staticmethod
+    def create_evaluation_job(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
+        AwardsHandler._authorize(p, {"awards.read", "awards.request", "awards.admin"})
+        body = p.get("_body") or {}
+        require(body, "awardId", "subjectId")
+        award = AwardsHandler._award(body["awardId"])
+        payload = {"awardId": award["id"], "subjectId": body["subjectId"], "facts": body.get("facts")}
+        job = AwardsHandler._queue_job("AWARD_EVALUATION", payload, p.get("Idempotency-Key"))
+        return {"evaluationId": job["id"], **job, "_status": 202}
+
+    @staticmethod
+    def create_render_job(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
+        AwardsHandler._authorize(p, {"awards.admin"})
+        issuance = AwardsHandler._bucket("issuances")[p["issuanceId"]]
+        job = AwardsHandler._queue_job("PDF_RENDER", {"issuanceId": issuance["id"]}, p.get("Idempotency-Key"))
+        return {"renderJobId": job["id"], "issuanceId": issuance["id"], **job, "_status": 202}
+
+    @staticmethod
+    def issue_request_resource(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
+        return AwardsHandler.issue_request(None, p)
+
+    @staticmethod
+    def artifact(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
+        return AwardsHandler.download_issuance(None, {**p, "issuanceId": p["issuanceId"]})
 
     @staticmethod
     def register_asset(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
@@ -409,6 +458,10 @@ class AwardsHandler(JsonHandler):
     def progress(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
         claims = AwardsHandler._claims(p)
         body = p.get("_body", {})
+        if not body and p.get("_path"):
+            from urllib.parse import parse_qs, urlparse
+            query = parse_qs(urlparse(p["_path"]).query)
+            body = {"awardId": query.get("awardId", [None])[0], "subjectId": query.get("participantId", query.get("subjectId", [None]))[0]}
         award_id = body.get("awardId") or p.get("awardId")
         subject_id = body.get("subjectId") or p.get("subjectId")
         require({"awardId": award_id, "subjectId": subject_id}, "awardId", "subjectId")
@@ -538,14 +591,23 @@ AwardsHandler.routes = {
     ("POST", "/v1/awards/{awardId}/publish"): AwardsHandler.publish_award,
     ("POST", "/v1/awards/{awardId}/retire"): AwardsHandler.retire_award,
     ("POST", "/v1/awards/{awardId}/recalculate"): AwardsHandler.recalculate_award,
+    ("POST", "/v1/awards/{awardId}/recalculation-jobs"): AwardsHandler.recalculate_award,
+    ("GET", "/v1/awards/{awardId}/recalculation-jobs/{jobId}"): AwardsHandler.get_job,
     ("POST", "/v1/awards/assets/{assetId}/upload-url"): AwardsHandler.asset_upload_url,
     ("POST", "/v1/awards/assets/{assetId}/content"): AwardsHandler.asset_content,
     ("POST", "/v1/awards/evaluate"): AwardsHandler.evaluate,
+    ("POST", "/v1/awards/evaluation-jobs"): AwardsHandler.create_evaluation_job,
+    ("GET", "/v1/awards/evaluation-jobs/{jobId}"): AwardsHandler.get_job,
     ("POST", "/v1/awards/progress"): AwardsHandler.progress,
+    ("GET", "/v1/awards/progress"): AwardsHandler.progress,
     ("POST", "/v1/awards/requests"): AwardsHandler.request_award,
     ("POST", "/v1/awards/requests/{requestId}/issue"): AwardsHandler.issue_request,
+    ("POST", "/v1/awards/requests/{requestId}/issuances"): AwardsHandler.issue_request_resource,
     ("POST", "/v1/awards/issuances/{issuanceId}/render"): AwardsHandler.render_issuance,
+    ("POST", "/v1/awards/issuances/{issuanceId}/render-jobs"): AwardsHandler.create_render_job,
+    ("GET", "/v1/awards/issuances/{issuanceId}/render-jobs/{jobId}"): AwardsHandler.get_job,
     ("GET", "/v1/awards/issuances/{issuanceId}/download"): AwardsHandler.download_issuance,
+    ("GET", "/v1/awards/issuances/{issuanceId}/artifact"): AwardsHandler.artifact,
 }
 
 AwardsHandler.deprecated_routes = {
@@ -553,6 +615,11 @@ AwardsHandler.deprecated_routes = {
     ("POST", "/v1/awards/{awardId}/review"),
     ("POST", "/v1/awards/{awardId}/publish"),
     ("POST", "/v1/awards/{awardId}/retire"),
+    ("POST", "/v1/awards/{awardId}/recalculate"),
+    ("POST", "/v1/awards/issuances/{issuanceId}/render"),
+    ("POST", "/v1/awards/requests/{requestId}/issue"),
+    ("POST", "/v1/awards/evaluate"),
+    ("POST", "/v1/awards/progress"),
 }
 
 

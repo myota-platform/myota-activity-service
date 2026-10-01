@@ -386,6 +386,21 @@ class ActivityRepository:
         with self.transaction() as connection:
             return self._job(connection, kind, payload, idempotency_key)
 
+    def get_job(self, job_id: str) -> dict[str, Any]:
+        """Return durable worker state for a resource/job status endpoint."""
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT id,kind,payload,status,attempts,available_at,started_at,completed_at,last_error "
+                "FROM activity_job WHERE id=%s", (job_id,)).fetchone()
+            if not row:
+                raise KeyError(job_id)
+            return {
+                "id": self._iso(row["id"]), "kind": row["kind"], "payload": row["payload"],
+                "status": row["status"], "attempts": row["attempts"],
+                "availableAt": self._iso(row["available_at"]), "startedAt": self._iso(row.get("started_at")),
+                "completedAt": self._iso(row.get("completed_at")), "lastError": row.get("last_error"),
+            }
+
     def create_correction(self, qso_id: str, body: dict[str, Any]) -> dict[str, Any]:
         with self.transaction() as connection:
             correction_id = new_id()

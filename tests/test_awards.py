@@ -58,6 +58,11 @@ class AwardServiceTests(unittest.TestCase):
         issuance = AwardsHandler.issue_request(None, {"requestId": request["id"], "_body": {"managerName": "Award Manager", "signatureAssetId": signature["id"]}})
         self.assertEqual(issuance["artifact"]["mediaType"], "application/pdf")
         self.assertEqual(issuance["renderSpec"]["printSpec"]["page"], "A4")
+        evaluation_job = AwardsHandler.create_evaluation_job(None, {"_body": {"awardId": award["id"], "subjectId": "operator-1"},
+                                                                     "Idempotency-Key": "phase3-award-evaluation"})
+        self.assertEqual(AwardsHandler.get_job(None, {"jobId": evaluation_job["id"]})["kind"], "AWARD_EVALUATION")
+        render_job = AwardsHandler.create_render_job(None, {"issuanceId": issuance["id"], "Idempotency-Key": "phase3-render"})
+        self.assertEqual(AwardsHandler.get_job(None, {"jobId": render_job["id"]})["kind"], "PDF_RENDER")
         higher = AwardsHandler.request_award(None, {"_body": {"awardId": award["id"], "levelId": "50", "subjectId": "operator-1",
             "callsign": "EA7TEST", "personName": "Test Operator", "facts": {"qsoCount": 55, "entityType": "MUNICIPAL_PARK"}}})
         self.assertEqual(higher["levelId"], "50")

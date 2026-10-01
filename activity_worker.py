@@ -74,6 +74,33 @@ def process_statistics(repo: ActivityRepository, payload: dict[str, Any]) -> Non
     repo.rebuild_statistics(payload.get("programmeSlug"))
 
 
+def process_qso_ingestion(repo: ActivityRepository, payload: dict[str, Any]) -> None:
+    activation = repo.get_activation(payload["activationId"])
+    normalized = []
+    for row in payload["records"]:
+        record = normalize_qso({**row, "source": payload.get("sourceFormat", "JSON")})
+        record["deduplicationKey"] = qso_deduplication_key(payload["activationId"], record)
+        normalized.append(record)
+    repo.insert_qso_batch(payload["activationId"], normalized)
+
+
+def process_award_evaluation(repo: ActivityRepository, payload: dict[str, Any]) -> None:
+    award = repo.get_collection_record("definitions", payload["awardId"])
+    subject_id = payload["subjectId"]
+    facts = payload.get("facts") or repo.subject_facts(award["programmeSlug"], subject_id, award.get("category", "HUNTER"))
+    condition_met = evaluate_condition(award["condition"], facts)
+    metric_field = {"QSO_COUNT": "qsoCount", "UNIQUE_CALLSIGNS": "uniqueCallsignCount", "UNIQUE_ENTITIES": "uniqueEntityCount", "ACTIVATION_COUNT": "activationCount"}.get(award.get("achievementMetric", "QSO_COUNT"), award.get("achievementMetric", "qsoCount"))
+    progress = float(facts.get(metric_field, 0))
+    levels = [{**level, "eligible": condition_met and progress >= float(level["threshold"])} for level in award.get("levels", [])]
+    repo.save_progress(award, subject_id, award.get("category", "HUNTER"), facts,
+                       {"awardId": award["id"], "subjectId": subject_id, "conditionMet": condition_met,
+                        "metric": award.get("achievementMetric", "QSO_COUNT"), "progress": progress,
+                        "levels": levels, "ruleVersion": award.get("version", 1)})
+    if any(level.get("eligible") for level in levels):
+        repo.create_notification(subject_id, "AWARD_QUALIFIED", {"awardId": award["id"], "levels": levels},
+                                 f"award-qualified:{award['id']}:{award.get('version', 1)}:{subject_id}")
+
+
 def process_notification(repo: ActivityRepository, payload: dict[str, Any]) -> None:
     with repo.transaction() as connection:
         connection.execute("UPDATE activity_notification SET status='DELIVERED',delivered_at=now() WHERE id=%s AND status='QUEUED'", (payload["notificationId"],))
@@ -81,7 +108,8 @@ def process_notification(repo: ActivityRepository, payload: dict[str, Any]) -> N
 
 def process(repo: ActivityRepository, job: dict[str, Any]) -> None:
     AwardsHandler.repository = repo
-    handlers = {"ADIF_IMPORT": process_adif, "AWARD_RECALCULATE": process_award_recalculation,
+    handlers = {"ADIF_IMPORT": process_adif, "QSO_INGESTION": process_qso_ingestion,
+                "AWARD_RECALCULATE": process_award_recalculation, "AWARD_EVALUATION": process_award_evaluation,
                 "PDF_RENDER": process_pdf, "STATISTICS_REBUILD": process_statistics,
                 "NOTIFICATION_SEND": process_notification}
     handler = handlers.get(job["kind"])

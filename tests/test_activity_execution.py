@@ -41,6 +41,27 @@ class ActivityExecutionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ObjectStore.scan_content(b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*", "infected.adi")
 
+    def test_phase3_activation_and_ingestion_resources_queue_jobs(self) -> None:
+        activation = ActivityHandler.create_activation(None, {"_body": {
+            "programmeSlug": "sevilla-demo", "entityId": "park-1", "operatorId": "operator-1",
+            "startedAt": "2026-01-01T10:00:00Z", "programmeRules": {"minimumQsos": 0},
+        }})
+        ingestion = ActivityHandler.create_qso_ingestion(None, {"_body": {
+            "activationId": activation["id"], "qsos": [{"workedCallsign": "K1ABC", "timestamp": "2026-01-01T10:05:00Z"}],
+        }, "Idempotency-Key": "phase3-ingestion"})
+        self.assertEqual(ingestion["status"], "QUEUED")
+        self.assertEqual(ActivityHandler.get_job(None, {"jobId": ingestion["id"]})["kind"], "QSO_INGESTION")
+        closed = ActivityHandler.update_activation(None, {"activationId": activation["id"], "_body": {
+            "status": "CLOSED", "endedAt": "2026-01-01T11:00:00Z"
+        }})
+        self.assertEqual(closed["status"], "CLOSED")
+
+    def test_phase3_statistics_job_resource_has_status(self) -> None:
+        queued = ActivityHandler.rebuild_statistics(None, {"_body": {"programmeSlug": "sevilla-demo"},
+                                                            "Idempotency-Key": "phase3-statistics"})
+        self.assertEqual(queued["status"], "QUEUED")
+        self.assertEqual(ActivityHandler.get_job(None, {"jobId": queued["jobId"]})["kind"], "STATISTICS_REBUILD")
+
 
 if __name__ == "__main__":
     unittest.main()

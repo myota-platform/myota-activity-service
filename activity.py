@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import base64
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
 from typing import Any
 
@@ -159,6 +159,56 @@ class ActivityHandler(JsonHandler):
         return activation
 
     @staticmethod
+    def update_activation(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
+        """Preferred activation resource update; close is the first lifecycle transition."""
+        body = dict(p.get("_body") or {})
+        if body.get("status") != "CLOSED":
+            raise ValueError("the activation resource currently supports status=CLOSED only")
+        ActivityHandler._authorize(p, {"activity.admin"}) if p.get("_http") else None
+        return ActivityHandler.close_activation(None, p)
+
+    @staticmethod
+    def _queue_job(kind: str, payload: dict[str, Any], idempotency_key: str | None = None) -> dict[str, Any]:
+        if ActivityHandler.repository.durable:
+            job_id = ActivityHandler.repository.enqueue_job(kind, payload, idempotency_key)
+            return {"id": job_id, "kind": kind, "payload": payload, "status": "QUEUED", "attempts": 0}
+        jobs = ActivityHandler.store.data.setdefault("jobs", [])
+        if idempotency_key:
+            existing = next((job for job in jobs if job.get("idempotencyKey") == idempotency_key), None)
+            if existing:
+                return existing
+        job = {"id": new_id(), "kind": kind, "payload": payload, "status": "QUEUED", "attempts": 0,
+               "idempotencyKey": idempotency_key, "createdAt": now()}
+        jobs.append(job)
+        return job
+
+    @staticmethod
+    def get_job(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
+        if ActivityHandler.repository.durable:
+            return ActivityHandler.repository.get_job(p["jobId"])
+        job = next((item for item in ActivityHandler.store.data.setdefault("jobs", []) if item.get("id") == p["jobId"]), None)
+        if not job:
+            raise KeyError(p["jobId"])
+        return job
+
+    @staticmethod
+    def create_qso_ingestion(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
+        body = p.get("_body") or {}
+        require(body, "activationId", "qsos")
+        records = body["qsos"]
+        if not isinstance(records, list) or not records:
+            raise ValueError("qsos must be a non-empty array")
+        if len(records) > int(os.environ.get("MYOTA_MAX_BATCH_QSOS", "5000")):
+            raise ValueError("QSO ingestion exceeds the configured limit")
+        payload = {"activationId": body["activationId"], "records": records, "sourceFormat": body.get("sourceFormat", "JSON")}
+        job = ActivityHandler._queue_job("QSO_INGESTION", payload, p.get("Idempotency-Key"))
+        return {"ingestionId": job["id"], **job, "_status": 202}
+
+    @staticmethod
+    def review_correction_resource(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
+        return ActivityHandler.review_correction(None, p)
+
+    @staticmethod
     def create_adif_import(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
         body = p["_body"]
         require(body, "activationId", "filename", "contentBase64")
@@ -247,10 +297,9 @@ class ActivityHandler(JsonHandler):
     def rebuild_statistics(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
         ActivityHandler._authorize(p, {"activity.admin"})
         programme = p.get("_body", {}).get("programmeSlug")
-        if ActivityHandler.repository.durable:
-            job_id = ActivityHandler.repository.enqueue_job("STATISTICS_REBUILD", {"programmeSlug": programme}, f"statistics:{programme or 'all'}:{datetime.utcnow().date()}")
-            return {"jobId": job_id, "status": "QUEUED", "_status": 202}
-        return {"status": "QUEUED", "_status": 202}
+        job = ActivityHandler._queue_job("STATISTICS_REBUILD", {"programmeSlug": programme},
+                                         f"statistics:{programme or 'all'}:{datetime.now(timezone.utc).date()}")
+        return {"jobId": job["id"], **job, "_status": 202}
 
     @staticmethod
     def list_statistics(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
@@ -279,20 +328,34 @@ ActivityHandler.routes = {
     ("GET", "/v1/activations"): ActivityHandler.list_activations,
     ("POST", "/v1/activations"): ActivityHandler.create_activation,
     ("GET", "/v1/activations/{activationId}"): ActivityHandler.get_activation,
+    ("PATCH", "/v1/activations/{activationId}"): ActivityHandler.update_activation,
     ("POST", "/v1/activations/{activationId}/qsos"): ActivityHandler.add_qso,
     ("POST", "/v1/activations/{activationId}/qsos/batch"): ActivityHandler.add_qso_batch,
     ("POST", "/v1/activations/{activationId}/close"): ActivityHandler.close_activation,
+    ("POST", "/v1/qso-ingestions"): ActivityHandler.create_qso_ingestion,
+    ("GET", "/v1/qso-ingestions/{ingestionId}"): ActivityHandler.get_job,
     ("POST", "/v1/adif/imports"): ActivityHandler.create_adif_import,
     ("GET", "/v1/adif/imports/{importId}"): ActivityHandler.get_adif_import,
     ("POST", "/v1/qsos/{qsoId}/corrections"): ActivityHandler.request_correction,
     ("POST", "/v1/qso-corrections/{correctionId}/review"): ActivityHandler.review_correction,
+    ("POST", "/v1/qsos/{qsoId}/corrections/{correctionId}/review"): ActivityHandler.review_correction_resource,
     ("GET", "/v1/public/activations"): ActivityHandler.public_history,
     ("GET", "/v1/public/leaderboards"): ActivityHandler.leaderboard,
     ("GET", "/v1/public/results"): ActivityHandler.public_results,
     ("POST", "/v1/statistics/rebuild"): ActivityHandler.rebuild_statistics,
+    ("POST", "/v1/statistics/rebuild-jobs"): ActivityHandler.rebuild_statistics,
+    ("GET", "/v1/statistics/rebuild-jobs/{jobId}"): ActivityHandler.get_job,
     ("GET", "/v1/statistics"): ActivityHandler.list_statistics,
     ("GET", "/v1/notifications"): ActivityHandler.list_notifications,
     **AwardsHandler.routes,
+}
+
+ActivityHandler.deprecated_routes = {
+    ("POST", "/v1/activations/{activationId}/close"),
+    ("POST", "/v1/activations/{activationId}/qsos/batch"),
+    ("POST", "/v1/adif/imports"),
+    ("POST", "/v1/qso-corrections/{correctionId}/review"),
+    ("POST", "/v1/statistics/rebuild"),
 }
 
 AwardsHandler.store = ActivityHandler.store
