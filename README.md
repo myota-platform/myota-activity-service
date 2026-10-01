@@ -23,6 +23,9 @@ in the [charter gap analysis](https://github.com/myota-platform/myota-docs/blob/
 - Relational, indexed activation/QSO storage with deduplication, idempotency,
   aggregate facts and PostgreSQL `COPY` batch ingestion; the generic JSONB
   state store is not used in durable activity mode.
+- The activity migration creates local state, idempotency, outbox,
+  consumer-checkpoint and dead-letter tables inside `myota_activity`; these
+  infrastructure tables are not read from `myota_core`.
 - Activation validity windows, location/rule checks, verified callsign inputs,
   normalization, band/mode validation, correction workflows and close-time
   programme rule evaluation.
