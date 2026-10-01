@@ -63,6 +63,12 @@ class ActivityExecutionTests(unittest.TestCase):
         self.assertEqual(queued["status"], "QUEUED")
         self.assertEqual(ActivityHandler.get_job(None, {"jobId": queued["jobId"]})["kind"], "STATISTICS_REBUILD")
 
+    def test_entity_deletion_resource_routes_are_available(self) -> None:
+        self.assertIn(("GET", "/v1/activations/entity-deletion-impacts/{entityId}"), ActivityHandler.routes)
+        self.assertIn(("POST", "/v1/activations/entity-deletion-cascades"), ActivityHandler.routes)
+        impact = ActivityHandler.entity_deletion_impact(None, {"entityId": "park-1"})
+        self.assertEqual(impact["entityId"], "park-1")
+
     def test_http_activity_mutation_requires_owner_or_admin(self) -> None:
         with self.assertRaises(PermissionError):
             ActivityHandler.create_activation(None, {"_http": "1", "Authorization": "", "_body": {

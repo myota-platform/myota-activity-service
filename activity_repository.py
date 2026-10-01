@@ -545,6 +545,80 @@ class ActivityRepository:
             rows = connection.execute("SELECT subject_id,qso_count,activation_count,unique_callsign_count,unique_entity_count FROM activity_subject_aggregate WHERE programme_slug=%s AND category=%s ORDER BY qso_count DESC,subject_id LIMIT %s", (programme, category, limit)).fetchall()
             return [dict(row) for row in rows]
 
+    def entity_deletion_impact(self, entity_id: str) -> dict[str, Any]:
+        with self.transaction() as connection:
+            qso_count = connection.execute(
+                "SELECT count(*) AS count FROM activity_qso q JOIN activity_activation a ON a.id=q.activation_id "
+                "WHERE q.status <> 'VOID' AND (q.worked_entity_id=%s OR a.entity_id=%s)", (entity_id, entity_id)).fetchone()["count"]
+            activation_count = connection.execute("SELECT count(*) AS count FROM activity_activation WHERE entity_id=%s", (entity_id,)).fetchone()["count"]
+            award_count = connection.execute(
+                "SELECT count(*) AS count FROM activity_award_progress p JOIN activity_award_definition d ON d.id=p.award_id "
+                "WHERE p.subject_id IN (SELECT DISTINCT operator_id FROM activity_activation WHERE entity_id=%s) "
+                "OR p.subject_id IN (SELECT DISTINCT hunter_id FROM activity_qso WHERE worked_entity_id=%s AND hunter_id IS NOT NULL)",
+                (entity_id, entity_id)).fetchone()["count"]
+            return {"entityId": entity_id, "qsoCount": int(qso_count), "activationCount": int(activation_count), "awardProgressCount": int(award_count)}
+
+    def cascade_delete_entity(self, entity_id: str, deleted_by: str) -> dict[str, Any]:
+        """Delete entity-linked QSOs, rebuild aggregates, and queue award recalculation."""
+        with self.transaction() as connection:
+            qso_rows = connection.execute(
+                "SELECT q.id,q.activation_id,q.operator_id,q.hunter_id,q.programme_slug,a.entity_id AS activation_entity_id "
+                "FROM activity_qso q JOIN activity_activation a ON a.id=q.activation_id "
+                "WHERE q.status <> 'VOID' AND (q.worked_entity_id=%s OR a.entity_id=%s) FOR UPDATE", (entity_id, entity_id)).fetchall()
+            activation_rows = connection.execute("SELECT id,operator_id,programme_slug FROM activity_activation WHERE entity_id=%s FOR UPDATE", (entity_id,)).fetchall()
+            subject_ids = {str(row["operator_id"]) for row in activation_rows}
+            programmes = {row["programme_slug"] for row in activation_rows}
+            for row in qso_rows:
+                subject_ids.add(str(row["operator_id"]))
+                if row.get("hunter_id"):
+                    subject_ids.add(str(row["hunter_id"]))
+                programmes.add(row["programme_slug"])
+            ids = [row["id"] for row in qso_rows]
+            affected_activation_ids = {row["activation_id"] for row in qso_rows}
+            affected_activation_ids.update(row["id"] for row in activation_rows)
+            if ids:
+                connection.execute("DELETE FROM activity_qso_correction WHERE qso_id = ANY(%s)", (ids,))
+                connection.execute("DELETE FROM activity_qso WHERE id = ANY(%s)", (ids,))
+            connection.execute(
+                "UPDATE activity_activation SET status=CASE WHEN entity_id=%s THEN 'CLOSED_INVALID' ELSE status END, "
+                "qso_count=(SELECT count(*) FROM activity_qso q WHERE q.activation_id=activity_activation.id AND q.status <> 'VOID'), "
+                "unique_callsign_count=(SELECT count(DISTINCT q.worked_callsign) FROM activity_qso q WHERE q.activation_id=activity_activation.id AND q.status <> 'VOID'), "
+                "unique_entity_count=(SELECT count(DISTINCT q.worked_entity_id) FROM activity_qso q WHERE q.activation_id=activity_activation.id AND q.status <> 'VOID'), updated_at=now() "
+                "WHERE entity_id=%s OR id = ANY(%s)", (entity_id, entity_id, list(affected_activation_ids)))
+            self._rebuild_subject_aggregates(connection, subject_ids)
+            jobs = []
+            for programme in programmes:
+                if not programme:
+                    continue
+                jobs.append(self._job(connection, "AWARD_RECALCULATE", {"programmeSlug": programme, "subjectIds": sorted(subject_ids), "reason": "ENTITY_DELETED", "entityId": entity_id}, f"entity-delete-awards:{entity_id}:{programme}"))
+            self._event(connection, "activity.entity.cascade-deleted.v1", "entity", entity_id,
+                         {"entityId": entity_id, "deletedBy": deleted_by, "qsoCount": len(ids), "awardRecalculationJobs": jobs})
+            return {"entityId": entity_id, "deletedBy": deleted_by, "qsoCount": len(ids), "activationCount": len(activation_rows), "awardRecalculationJobs": jobs}
+
+    @staticmethod
+    def _rebuild_subject_aggregates(connection: Any, subject_ids: set[str]) -> None:
+        for subject_id in subject_ids:
+            connection.execute("DELETE FROM activity_subject_callsign WHERE subject_id=%s", (subject_id,))
+            connection.execute("DELETE FROM activity_subject_entity WHERE subject_id=%s", (subject_id,))
+            connection.execute("DELETE FROM activity_subject_aggregate WHERE subject_id=%s", (subject_id,))
+            connection.execute(
+                "INSERT INTO activity_subject_aggregate(programme_slug,subject_id,category,qso_count,activation_count,unique_callsign_count,unique_entity_count,last_entity_type) "
+                "SELECT a.programme_slug,a.operator_id,'ACTIVATOR',count(q.id),count(DISTINCT a.id),count(DISTINCT q.worked_callsign),count(DISTINCT a.entity_id),max(a.entity_type) "
+                "FROM activity_activation a LEFT JOIN activity_qso q ON q.activation_id=a.id AND q.status <> 'VOID' "
+                "WHERE a.operator_id=%s GROUP BY a.programme_slug,a.operator_id", (subject_id,))
+            connection.execute(
+                "INSERT INTO activity_subject_aggregate(programme_slug,subject_id,category,qso_count,activation_count,unique_callsign_count,unique_entity_count,last_entity_type) "
+                "SELECT q.programme_slug,q.hunter_id,'HUNTER',count(*),0,count(DISTINCT q.worked_callsign),count(DISTINCT q.worked_entity_id),max(a.entity_type) "
+                "FROM activity_qso q JOIN activity_activation a ON a.id=q.activation_id WHERE q.hunter_id=%s AND q.status <> 'VOID' GROUP BY q.programme_slug,q.hunter_id", (subject_id,))
+            connection.execute(
+                "INSERT INTO activity_subject_callsign(programme_slug,subject_id,category,callsign) "
+                "SELECT DISTINCT a.programme_slug,a.operator_id,'ACTIVATOR',q.worked_callsign FROM activity_qso q JOIN activity_activation a ON a.id=q.activation_id WHERE a.operator_id=%s AND q.status <> 'VOID' "
+                "UNION SELECT DISTINCT q.programme_slug,q.hunter_id,'HUNTER',q.worked_callsign FROM activity_qso q WHERE q.hunter_id=%s AND q.status <> 'VOID'", (subject_id, subject_id))
+            connection.execute(
+                "INSERT INTO activity_subject_entity(programme_slug,subject_id,category,entity_id) "
+                "SELECT DISTINCT a.programme_slug,a.operator_id,'ACTIVATOR',a.entity_id FROM activity_qso q JOIN activity_activation a ON a.id=q.activation_id WHERE a.operator_id=%s AND q.status <> 'VOID' "
+                "UNION SELECT DISTINCT q.programme_slug,q.hunter_id,'HUNTER',q.worked_entity_id FROM activity_qso q WHERE q.hunter_id=%s AND q.worked_entity_id IS NOT NULL AND q.status <> 'VOID'", (subject_id, subject_id))
+
     def close(self) -> None:
         if self.pool is not None:
             self.pool.close()
