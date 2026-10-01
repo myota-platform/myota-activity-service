@@ -39,6 +39,19 @@ class ActivityHandler(JsonHandler):
         return claims
 
     @staticmethod
+    def _authorize_operator(p: dict[str, str], operator_id: str) -> dict[str, Any]:
+        """Allow the owning participant or an activity administrator to mutate activity."""
+        if not p.get("_http"):
+            return {}
+        claims = ActivityHandler._claims(p)
+        if not claims:
+            raise PermissionError("Bearer authentication is required")
+        scopes = set(claims.get("scp", []))
+        if str(claims.get("sub")) != str(operator_id) and not {"*", "activity.admin"}.intersection(scopes):
+            raise PermissionError("the activity owner or activity.admin scope is required")
+        return claims
+
+    @staticmethod
     def _in_memory_activation(activation_id: str) -> dict[str, Any]:
         try:
             return ActivityHandler.store.items[activation_id]
@@ -66,9 +79,7 @@ class ActivityHandler(JsonHandler):
     def create_activation(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
         body = validate_activation(p["_body"])
         require(body, "programmeSlug", "entityId", "operatorId", "startedAt")
-        claims = ActivityHandler._claims(p)
-        if p.get("_http") and claims.get("sub") not in (None, body["operatorId"]):
-            ActivityHandler._authorize(p, {"activity.admin"})
+        ActivityHandler._authorize_operator(p, body["operatorId"])
         if ActivityHandler.repository.durable:
             return {**ActivityHandler.repository.create_activation(body, p.get("Idempotency-Key")), "_status": 201}
 
@@ -107,9 +118,11 @@ class ActivityHandler(JsonHandler):
         require(body, "workedCallsign", "timestamp")
         if ActivityHandler.repository.durable:
             activation = ActivityHandler.repository.get_activation(p["activationId"])
+            ActivityHandler._authorize_operator(p, activation["operatorId"])
             record = ActivityHandler._record_qso(activation, body)
             return {**ActivityHandler.repository.insert_qso(p["activationId"], record, p.get("Idempotency-Key")), "_status": 201}
         activation = ActivityHandler._in_memory_activation(p["activationId"])
+        ActivityHandler._authorize_operator(p, activation["operatorId"])
         if activation["status"] != "OPEN":
             raise ValueError("activation is not open")
         record = ActivityHandler._record_qso(activation, body)
@@ -135,6 +148,7 @@ class ActivityHandler(JsonHandler):
             raise ValueError("QSO batch exceeds the configured limit")
         if ActivityHandler.repository.durable:
             activation = ActivityHandler.repository.get_activation(p["activationId"])
+            ActivityHandler._authorize_operator(p, activation["operatorId"])
             normalized = [ActivityHandler._record_qso(activation, record) for record in records]
             accepted = ActivityHandler.repository.insert_qso_batch(p["activationId"], normalized)
             return {"activationId": p["activationId"], "accepted": len(accepted), "duplicates": len(records) - len(accepted), "qsos": accepted, "_status": 201}
@@ -147,6 +161,7 @@ class ActivityHandler(JsonHandler):
     @staticmethod
     def close_activation(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
         activation = ActivityHandler.repository.get_activation(p["activationId"]) if ActivityHandler.repository.durable else ActivityHandler._in_memory_activation(p["activationId"])
+        ActivityHandler._authorize_operator(p, activation["operatorId"])
         if activation["status"] != "OPEN":
             raise ValueError("activation is not open")
         ended_at = p["_body"].get("endedAt", now())
@@ -164,7 +179,6 @@ class ActivityHandler(JsonHandler):
         body = dict(p.get("_body") or {})
         if body.get("status") != "CLOSED":
             raise ValueError("the activation resource currently supports status=CLOSED only")
-        ActivityHandler._authorize(p, {"activity.admin"}) if p.get("_http") else None
         return ActivityHandler.close_activation(None, p)
 
     @staticmethod
@@ -195,6 +209,8 @@ class ActivityHandler(JsonHandler):
     def create_qso_ingestion(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
         body = p.get("_body") or {}
         require(body, "activationId", "qsos")
+        activation = ActivityHandler.repository.get_activation(body["activationId"]) if ActivityHandler.repository.durable else ActivityHandler._in_memory_activation(body["activationId"])
+        ActivityHandler._authorize_operator(p, activation["operatorId"])
         records = body["qsos"]
         if not isinstance(records, list) or not records:
             raise ValueError("qsos must be a non-empty array")
@@ -212,6 +228,8 @@ class ActivityHandler(JsonHandler):
     def create_adif_import(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
         body = p["_body"]
         require(body, "activationId", "filename", "contentBase64")
+        activation = ActivityHandler.repository.get_activation(body["activationId"]) if ActivityHandler.repository.durable else ActivityHandler._in_memory_activation(body["activationId"])
+        ActivityHandler._authorize_operator(p, activation["operatorId"])
         try:
             content = base64.b64decode(body["contentBase64"], validate=True)
         except Exception as exc:
@@ -242,6 +260,11 @@ class ActivityHandler(JsonHandler):
     def request_correction(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
         body = p["_body"]
         require(body, "requestedBy", "reason", "proposedValues")
+        if p.get("_http"):
+            claims = ActivityHandler._claims(p)
+            scopes = set(claims.get("scp", []))
+            if str(claims.get("sub")) != str(body["requestedBy"]) and not {"*", "activity.admin"}.intersection(scopes):
+                raise PermissionError("the correction requester or activity.admin scope is required")
         if ActivityHandler.repository.durable:
             return ActivityHandler.repository.create_correction(p["qsoId"], body)
         correction = {"id": new_id(), "qsoId": p["qsoId"], **body, "status": "PENDING", "createdAt": now()}
@@ -252,6 +275,7 @@ class ActivityHandler(JsonHandler):
     def review_correction(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
         body = p["_body"]
         require(body, "decision", "reviewedBy")
+        ActivityHandler._authorize(p, {"activity.admin"}) if p.get("_http") else None
         if body["decision"] not in {"APPLIED", "REJECTED"}:
             raise ValueError("decision must be APPLIED or REJECTED")
         if ActivityHandler.repository.durable:

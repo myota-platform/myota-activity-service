@@ -371,9 +371,16 @@ class AwardsHandler(JsonHandler):
 
     @staticmethod
     def create_evaluation_job(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
-        AwardsHandler._authorize(p, {"awards.read", "awards.request", "awards.admin"})
         body = p.get("_body") or {}
         require(body, "awardId", "subjectId")
+        if p.get("_http"):
+            claims = AwardsHandler._claims(p)
+            if str(claims.get("sub")) != str(body["subjectId"]):
+                AwardsHandler._authorize(p, {"awards.read", "awards.request", "awards.admin"})
+            else:
+                # Participant evaluations always use service-owned aggregates;
+                # only trusted administrative callers may provide a snapshot.
+                body = {**body, "facts": None}
         award = AwardsHandler._award(body["awardId"])
         payload = {"awardId": award["id"], "subjectId": body["subjectId"], "facts": body.get("facts")}
         job = AwardsHandler._queue_job("AWARD_EVALUATION", payload, p.get("Idempotency-Key"))

@@ -277,6 +277,19 @@ class ActivityRepository:
                     "uniqueCallsignCount": int(row["unique_callsign_count"]), "uniqueEntityCount": int(row["unique_entity_count"]),
                     "entityType": row.get("last_entity_type")}
 
+    def list_subject_ids(self, programme: str, category: str | None = None) -> list[str]:
+        """Return subjects represented by the precomputed aggregate tables."""
+        with self.transaction() as connection:
+            if category:
+                rows = connection.execute(
+                    "SELECT DISTINCT subject_id FROM activity_subject_aggregate WHERE programme_slug=%s AND category=%s ORDER BY subject_id",
+                    (programme, category)).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT DISTINCT subject_id FROM activity_subject_aggregate WHERE programme_slug=%s ORDER BY subject_id",
+                    (programme,)).fetchall()
+            return [str(row["subject_id"]) for row in rows]
+
     def save_collection(self, collection: str, record: dict[str, Any]) -> dict[str, Any]:
         """Persist award/asset/request/issuance records as service-owned rows."""
         with self.transaction() as connection:
@@ -415,6 +428,9 @@ class ActivityRepository:
                 raise KeyError(correction_id)
             if correction["status"] != "PENDING":
                 raise ValueError("correction is no longer pending")
+            qso = connection.execute("SELECT * FROM activity_qso WHERE id=%s FOR UPDATE", (correction["qso_id"],)).fetchone()
+            if not qso:
+                raise KeyError(str(correction["qso_id"]))
             if body["decision"] == "APPLIED":
                 values = correction["proposed_values"]
                 allowed = {"workedCallsign", "workedStationKey", "workedEntityId", "occurredAt", "band", "mode", "rst", "hunterId", "hunterCallsign"}
@@ -426,6 +442,10 @@ class ActivityRepository:
                     args.append(self._dt(value) if key == "occurredAt" else value)
                 args.append(str(correction["qso_id"]))
                 connection.execute(f"UPDATE activity_qso SET {','.join(assignments)} WHERE id=%s", args)
+                self._job(connection, "AWARD_RECALCULATE",
+                          {"programmeSlug": qso["programme_slug"],
+                           "subjectIds": [value for value in (qso["operator_id"], qso.get("hunter_id")) if value]},
+                          f"correction:{correction_id}")
             row = connection.execute("UPDATE activity_qso_correction SET status=%s,reviewed_by=%s,review_note=%s,reviewed_at=now() WHERE id=%s RETURNING *",
                                      (body["decision"], body["reviewedBy"], body.get("reviewNote"), correction_id)).fetchone()
             return {"id": self._iso(row["id"]), "qsoId": self._iso(row["qso_id"]), "requestedBy": row["requested_by"], "reason": row["reason"], "proposedValues": row["proposed_values"], "status": row["status"], "reviewedBy": row.get("reviewed_by"), "reviewNote": row.get("review_note"), "reviewedAt": self._iso(row.get("reviewed_at"))}
@@ -448,13 +468,15 @@ class ActivityRepository:
         with self.transaction() as connection:
             programmes = [programme] if programme else [row["programme_slug"] for row in connection.execute("SELECT DISTINCT programme_slug FROM activity_activation").fetchall()]
             generated = []
+            algorithm_version = "activity-v2"
             for slug in programmes:
+                connection.execute("DELETE FROM activity_statistic_snapshot WHERE programme_slug=%s AND algorithm_version=%s", (slug, algorithm_version))
                 for category in ("ACTIVATOR", "HUNTER"):
                     row = connection.execute("SELECT count(*) AS participants,coalesce(sum(qso_count),0) AS qsos,coalesce(sum(activation_count),0) AS activations,coalesce(max(qso_count),0) AS max_qsos FROM activity_subject_aggregate WHERE programme_slug=%s AND category=%s", (slug, category)).fetchone()
                     snapshot = {"participants": row["participants"], "qsos": int(row["qsos"]), "activations": int(row["activations"]), "maxQsos": int(row["max_qsos"])}
                     snapshot_id = new_id()
                     connection.execute("INSERT INTO activity_statistic_snapshot(id,programme_slug,statistic_type,scope_key,metric_values,algorithm_version) VALUES (%s,%s,%s,%s,%s,%s)",
-                                       (snapshot_id, slug, "PROGRAMME_SUMMARY", category, self._json(snapshot), "activity-v1"))
+                                       (snapshot_id, slug, "PROGRAMME_SUMMARY", category, self._json(snapshot), algorithm_version))
                     generated.append({"id": snapshot_id, "programme": slug, "category": category, **snapshot})
                 for statistic_type, group_column in (("ENTITY", "entity_id"), ("JURISDICTION", "jurisdiction_code")):
                     rows = connection.execute(f"SELECT {group_column} AS scope_key,count(DISTINCT operator_id) AS participants,coalesce(sum(qso_count),0) AS qsos,count(*) AS activations FROM activity_activation WHERE programme_slug=%s AND {group_column} IS NOT NULL GROUP BY {group_column} ORDER BY {group_column}", (slug,)).fetchall()
@@ -462,9 +484,9 @@ class ActivityRepository:
                         snapshot = {"participants": row["participants"], "qsos": int(row["qsos"]), "activations": row["activations"]}
                         snapshot_id = new_id()
                         connection.execute("INSERT INTO activity_statistic_snapshot(id,programme_slug,statistic_type,scope_key,metric_values,algorithm_version) VALUES (%s,%s,%s,%s,%s,%s)",
-                                           (snapshot_id, slug, statistic_type, str(row["scope_key"]), self._json(snapshot), "activity-v1"))
+                                           (snapshot_id, slug, statistic_type, str(row["scope_key"]), self._json(snapshot), algorithm_version))
                         generated.append({"id": snapshot_id, "programme": slug, "type": statistic_type, "scope": str(row["scope_key"]), **snapshot})
-            return {"algorithmVersion": "activity-v1", "items": generated, "generatedAt": now()}
+            return {"algorithmVersion": algorithm_version, "items": generated, "generatedAt": now()}
 
     def list_statistics(self, programme: str | None = None) -> list[dict[str, Any]]:
         with self.transaction() as connection:

@@ -48,12 +48,17 @@ def process_adif(repo: ActivityRepository, payload: dict[str, Any]) -> None:
 def process_award_recalculation(repo: ActivityRepository, payload: dict[str, Any]) -> None:
     programme = payload.get("programmeSlug")
     subjects = {str(value) for value in payload.get("subjectIds", []) if value}
-    for award in repo.list_collection("definitions"):
+    definitions = repo.list_collection("definitions")
+    award_id = payload.get("awardId")
+    if award_id:
+        definitions = [award for award in definitions if str(award.get("id")) == str(award_id)]
+    for award in definitions:
         if award.get("programmeSlug") != programme or award.get("status") not in {"PUBLISHED", "RETIRED"}:
             continue
-        if not subjects:
+        if payload.get("ruleVersion") is not None and int(award.get("version", 1)) != int(payload["ruleVersion"]):
             continue
-        for subject_id in subjects:
+        award_subjects = subjects or set(repo.list_subject_ids(programme, award.get("category", "HUNTER")))
+        for subject_id in award_subjects:
             facts = repo.subject_facts(programme, subject_id, award.get("category", "HUNTER"))
             condition_met = evaluate_condition(award["condition"], facts)
             metric_field = {"QSO_COUNT": "qsoCount", "UNIQUE_CALLSIGNS": "uniqueCallsignCount", "UNIQUE_ENTITIES": "uniqueEntityCount", "ACTIVATION_COUNT": "activationCount"}.get(award.get("achievementMetric", "QSO_COUNT"), award.get("achievementMetric", "qsoCount"))

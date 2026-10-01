@@ -8,6 +8,7 @@ _root = Path(__file__).parents[1]
 sys.path.insert(0, str(_root / "services" if (_root / "services").is_dir() else _root))
 from activity import ActivityHandler
 from activity_domain import parse_adif
+from activity_worker import process_award_recalculation
 from storage import ObjectStore
 
 
@@ -61,6 +62,44 @@ class ActivityExecutionTests(unittest.TestCase):
                                                             "Idempotency-Key": "phase3-statistics"})
         self.assertEqual(queued["status"], "QUEUED")
         self.assertEqual(ActivityHandler.get_job(None, {"jobId": queued["jobId"]})["kind"], "STATISTICS_REBUILD")
+
+    def test_http_activity_mutation_requires_owner_or_admin(self) -> None:
+        with self.assertRaises(PermissionError):
+            ActivityHandler.create_activation(None, {"_http": "1", "Authorization": "", "_body": {
+                "programmeSlug": "sevilla-demo", "entityId": "park-1", "operatorId": "operator-1",
+                "startedAt": "2026-01-01T10:00:00Z"}})
+
+    def test_award_recalculation_uses_requested_version_and_all_subjects(self) -> None:
+        class FakeRepository:
+            def __init__(self) -> None:
+                self.saved = []
+                self.notifications = []
+
+            def list_collection(self, collection):
+                return [
+                    {"id": "award-v1", "programmeSlug": "demo", "status": "PUBLISHED", "version": 1,
+                     "category": "HUNTER", "condition": {"kind": "QSO_COUNT", "operator": "GTE", "value": 1},
+                     "achievementMetric": "QSO_COUNT", "levels": [{"id": "one", "threshold": 1}], "code": "ONE"},
+                    {"id": "award-v2", "programmeSlug": "demo", "status": "PUBLISHED", "version": 2,
+                     "category": "HUNTER", "condition": {"kind": "QSO_COUNT", "operator": "GTE", "value": 1},
+                     "achievementMetric": "QSO_COUNT", "levels": [{"id": "one", "threshold": 1}], "code": "ONE"},
+                ]
+
+            def list_subject_ids(self, programme, category):
+                return ["hunter-1", "hunter-2"]
+
+            def subject_facts(self, programme, subject_id, category):
+                return {"qsoCount": 1, "uniqueCallsignCount": 1, "uniqueEntityCount": 1, "activationCount": 1}
+
+            def save_progress(self, award, subject_id, category, facts, evaluation):
+                self.saved.append((award["id"], subject_id, evaluation["ruleVersion"]))
+
+            def create_notification(self, *args):
+                self.notifications.append(args)
+
+        repository = FakeRepository()
+        process_award_recalculation(repository, {"programmeSlug": "demo", "awardId": "award-v1", "ruleVersion": 1})
+        self.assertEqual(repository.saved, [("award-v1", "hunter-1", 1), ("award-v1", "hunter-2", 1)])
 
 
 if __name__ == "__main__":
