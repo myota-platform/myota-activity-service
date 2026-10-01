@@ -1,5 +1,7 @@
 -- Activity service owns these tables.  The generic service_state table remains
 -- available to older services, but activity data is never persisted there.
+CREATE EXTENSION IF NOT EXISTS citext;
+
 CREATE TABLE IF NOT EXISTS activity_activation (
   id uuid PRIMARY KEY,
   programme_slug text NOT NULL,
