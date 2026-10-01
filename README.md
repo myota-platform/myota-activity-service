@@ -67,10 +67,12 @@ participant, award-progress, import, worker, queue-lag and correction gauges.
 When `MYOTA_OTEL_ENABLED=1`, request metrics and traces are exported to the
 OpenTelemetry Collector configured by `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
-For a containerized PostGIS environment, start Colima and use the Compose stack
-in `myota-deploy`. It runs the API on port 8004, activity workers, the
-notification consumer, PostgreSQL/PostGIS, NATS and SeaweedFS. Helm deploys three
-stateless activity API replicas by default and separately scales workers.
+For the durable local environment, start Colima and use the Compose stack in
+`myota-deploy`. It runs the API on port 8004, activity workers, the notification
+consumer, the dedicated plain-PostgreSQL `myota_activity` database, NATS and
+SeaweedFS. Geodata/PostGIS and core PostgreSQL are separate containers owned by
+the deployment. Helm deploys three stateless activity API replicas by default
+and separately scales workers.
 
 ## Architecture
 
