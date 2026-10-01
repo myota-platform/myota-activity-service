@@ -49,7 +49,7 @@ deterministically. The legacy action routes remain deprecated aliases. See the
 [Phase 3 activity and award job record](https://github.com/myota-platform/myota-docs/blob/main/docs/api-phase3-activity-award-jobs.md).
 
 The unit-test adapter remains in-memory for fast contract tests. When
-`CORE_DATABASE_URL` is configured, `activity_repository.py` uses only the
+`ACTIVITY_DATABASE_URL` is configured, `activity_repository.py` uses only the
 activity-owned relational schema and never rewrites a service-wide JSON state
 snapshot.
 

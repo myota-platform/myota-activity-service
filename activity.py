@@ -18,8 +18,8 @@ class ActivityHandler(JsonHandler):
     service = "activity-service"
     # The generic state store is deliberately test-only for this service. In
     # durable mode all activity and award writes use ActivityRepository.
-    store = Store("activity", "CORE_DATABASE_URL", persist_state=False)
-    repository = ActivityRepository("CORE_DATABASE_URL")
+    store = Store("activity", "ACTIVITY_DATABASE_URL", persist_state=False)
+    repository = ActivityRepository("ACTIVITY_DATABASE_URL")
 
     @classmethod
     def metrics_extra(cls) -> dict[str, float]:

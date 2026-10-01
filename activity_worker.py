@@ -124,9 +124,9 @@ def process(repo: ActivityRepository, job: dict[str, Any]) -> None:
 
 
 async def main() -> None:
-    repo = ActivityRepository("CORE_DATABASE_URL")
+    repo = ActivityRepository("ACTIVITY_DATABASE_URL")
     if not repo.durable:
-        raise RuntimeError("CORE_DATABASE_URL is required for the activity worker")
+        raise RuntimeError("ACTIVITY_DATABASE_URL is required for the activity worker")
     while True:
         job = await asyncio.to_thread(repo.claim_job)
         if not job:

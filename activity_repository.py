@@ -18,7 +18,7 @@ from common import new_id, now, require_durable_database
 
 
 class ActivityRepository:
-    def __init__(self, dsn_env: str = "CORE_DATABASE_URL") -> None:
+    def __init__(self, dsn_env: str = "ACTIVITY_DATABASE_URL") -> None:
         self.dsn = os.environ.get(dsn_env, "")
         require_durable_database(dsn_env, self.dsn)
         self.pool: Any = None

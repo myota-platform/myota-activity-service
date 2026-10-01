@@ -147,7 +147,7 @@ def _validate_elements(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 class AwardsHandler(JsonHandler):
     service = "awards-service"
-    store = Store("awards", "CORE_DATABASE_URL")
+    store = Store("awards", "ACTIVITY_DATABASE_URL")
     repository: Any = None
 
     @staticmethod

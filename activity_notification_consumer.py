@@ -23,9 +23,9 @@ def recipient_and_kind(event: dict[str, Any]) -> tuple[str | None, str | None]:
 
 
 async def main() -> None:
-    repo = ActivityRepository("CORE_DATABASE_URL")
+    repo = ActivityRepository("ACTIVITY_DATABASE_URL")
     if not repo.durable:
-        raise RuntimeError("CORE_DATABASE_URL is required for the notification consumer")
+        raise RuntimeError("ACTIVITY_DATABASE_URL is required for the notification consumer")
 
     async def handle(event: dict[str, Any]) -> None:
         recipient, kind = recipient_and_kind(event)
