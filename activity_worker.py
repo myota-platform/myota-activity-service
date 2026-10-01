@@ -57,7 +57,7 @@ def process_award_recalculation(repo: ActivityRepository, payload: dict[str, Any
             continue
         if payload.get("ruleVersion") is not None and int(award.get("version", 1)) != int(payload["ruleVersion"]):
             continue
-        award_subjects = subjects or set(repo.list_subject_ids(programme, award.get("category", "HUNTER")))
+        award_subjects = sorted(subjects or set(repo.list_subject_ids(programme, award.get("category", "HUNTER"))))
         for subject_id in award_subjects:
             facts = repo.subject_facts(programme, subject_id, award.get("category", "HUNTER"))
             condition_met = evaluate_condition(award["condition"], facts)
