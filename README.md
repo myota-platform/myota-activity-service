@@ -62,6 +62,11 @@ python3 services/dev_server.py
 
 Open <http://127.0.0.1:8004/healthz> for the activity service. Activations and awards intentionally share this port; the gateway exposes the same paths without a second awards service.
 
+The service exposes a real-data `/metrics` endpoint with QSO, activation,
+participant, award-progress, import, worker, queue-lag and correction gauges.
+When `MYOTA_OTEL_ENABLED=1`, request metrics and traces are exported to the
+OpenTelemetry Collector configured by `OTEL_EXPORTER_OTLP_ENDPOINT`.
+
 For a containerized PostGIS environment, start Colima and use the Compose stack
 in `myota-deploy`. It runs the API on port 8004, activity workers, the
 notification consumer, PostgreSQL/PostGIS, NATS and SeaweedFS. Helm deploys three
