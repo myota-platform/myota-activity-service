@@ -34,6 +34,11 @@ in the [charter gap analysis](https://github.com/myota-platform/myota-docs/blob/
   background workers for ADIF, award recalculation, certificate rendering,
   statistics and notifications.
 
+Award administration also supports the Phase 1 `PATCH /v1/awards/{awardId}`
+resource for draft edits and lifecycle transitions. The existing submit,
+review, publish, and retire action routes remain deprecated compatibility
+aliases. See the [Phase 1 API resource update record](https://github.com/myota-platform/myota-docs/blob/main/docs/api-phase1-resource-updates.md).
+
 The unit-test adapter remains in-memory for fast contract tests. When
 `CORE_DATABASE_URL` is configured, `activity_repository.py` uses only the
 activity-owned relational schema and never rewrites a service-wide JSON state

@@ -316,6 +316,23 @@ class AwardsHandler(JsonHandler):
         return award
 
     @staticmethod
+    def patch_award(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
+        """Preferred award resource update, delegating lifecycle transitions."""
+        body = dict(p.get("_body") or {})
+        status = body.pop("status", None)
+        action = {**p, "_body": body}
+        if status == "UNDER_REVIEW":
+            return AwardsHandler.submit_award(None, action)
+        if status in ("APPROVED", "CHANGES_REQUESTED"):
+            return AwardsHandler.review_award(None, {**p, "_body": {**body, "decision": status}})
+        if status == "PUBLISHED":
+            return AwardsHandler.publish_award(None, action)
+        if status == "RETIRED":
+            return AwardsHandler.retire_award(None, action)
+        award = AwardsHandler._award(p["awardId"])
+        return AwardsHandler.save_award(None, {**p, "_body": {**award, **body, "awardId": p["awardId"]}})
+
+    @staticmethod
     def recalculate_award(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
         AwardsHandler._authorize(p, {"awards.admin"})
         award = AwardsHandler._award(p["awardId"])
@@ -515,6 +532,7 @@ AwardsHandler.routes = {
     ("GET", "/v1/awards/requests"): AwardsHandler.list_requests,
     ("GET", "/v1/awards/issuances"): AwardsHandler.list_issuances,
     ("GET", "/v1/awards/{awardId}"): AwardsHandler.get_award,
+    ("PATCH", "/v1/awards/{awardId}"): AwardsHandler.patch_award,
     ("POST", "/v1/awards/{awardId}/submit"): AwardsHandler.submit_award,
     ("POST", "/v1/awards/{awardId}/review"): AwardsHandler.review_award,
     ("POST", "/v1/awards/{awardId}/publish"): AwardsHandler.publish_award,
@@ -528,6 +546,13 @@ AwardsHandler.routes = {
     ("POST", "/v1/awards/requests/{requestId}/issue"): AwardsHandler.issue_request,
     ("POST", "/v1/awards/issuances/{issuanceId}/render"): AwardsHandler.render_issuance,
     ("GET", "/v1/awards/issuances/{issuanceId}/download"): AwardsHandler.download_issuance,
+}
+
+AwardsHandler.deprecated_routes = {
+    ("POST", "/v1/awards/{awardId}/submit"),
+    ("POST", "/v1/awards/{awardId}/review"),
+    ("POST", "/v1/awards/{awardId}/publish"),
+    ("POST", "/v1/awards/{awardId}/retire"),
 }
 
 

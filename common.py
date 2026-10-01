@@ -262,6 +262,7 @@ class JsonHandler(BaseHTTPRequestHandler):
     service = "myota-service"
     routes: dict[tuple[str, str], Callable[["JsonHandler", dict[str, str]], Any]] = {}
     store = Store()
+    deprecated_routes: set[tuple[str, str]] = set()
 
     def log_message(self, format: str, *args: Any) -> None:
         return
@@ -278,7 +279,10 @@ class JsonHandler(BaseHTTPRequestHandler):
         self.send_header("X-Correlation-ID", self.correlation_id)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key, X-Request-ID, X-Correlation-ID")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+        if getattr(self, "current_route", None) in self.deprecated_routes:
+            self.send_header("Deprecation", "true")
+            self.send_header("Sunset", os.environ.get("MYOTA_LEGACY_ROUTE_SUNSET", "2027-04-01T00:00:00Z"))
         self.send_header("API-Version", "v1")
         self.end_headers()
         if data:
@@ -298,6 +302,15 @@ class JsonHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         self._dispatch("POST")
+
+    def do_PUT(self) -> None:
+        self._dispatch("PUT")
+
+    def do_PATCH(self) -> None:
+        self._dispatch("PATCH")
+
+    def do_DELETE(self) -> None:
+        self._dispatch("DELETE")
 
     def _dispatch(self, method: str) -> None:
         self.request_id, self.correlation_id = self._request_id(), self.headers.get("X-Correlation-ID") or new_id()
@@ -321,7 +334,8 @@ class JsonHandler(BaseHTTPRequestHandler):
                     break
             if matched:
                 try:
-                    body = read_json(self) if method == "POST" else {}
+                    self.current_route = (method, pattern)
+                    body = read_json(self) if method in {"POST", "PUT", "PATCH", "DELETE"} else {}
                     result = fn(self, {**params, "_body": body, "_path": self.path,
                                        "Idempotency-Key": self.headers.get("Idempotency-Key"),
                                        "Authorization": self.headers.get("Authorization", ""),
