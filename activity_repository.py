@@ -414,6 +414,22 @@ class ActivityRepository:
                 "completedAt": self._iso(row.get("completed_at")), "lastError": row.get("last_error"),
             }
 
+    def metrics(self) -> dict[str, float]:
+        """Return bounded gauges for the operational dashboard."""
+        with self.transaction() as connection:
+            rows = connection.execute("SELECT status, count(*) AS total FROM activity_job GROUP BY status").fetchall()
+            lag = connection.execute(
+                "SELECT COALESCE(EXTRACT(EPOCH FROM (now() - min(available_at))), 0) "
+                "FROM activity_job WHERE status='QUEUED' AND available_at <= now()"
+            ).fetchone()
+            corrections = connection.execute(
+                "SELECT count(*) FROM activity_qso_correction WHERE status IN ('PENDING','REVIEW_REQUIRED')"
+            ).fetchone()
+        result = {f"myota_activity_jobs_{str(row['status']).lower()}_total": float(row['total']) for row in rows}
+        result["myota_activity_job_lag_seconds"] = float((lag[0] if not isinstance(lag, dict) else next(iter(lag.values()))) or 0)
+        result["myota_activity_qso_corrections_pending"] = float((corrections[0] if not isinstance(corrections, dict) else next(iter(corrections.values()))) or 0)
+        return result
+
     def create_correction(self, qso_id: str, body: dict[str, Any]) -> dict[str, Any]:
         with self.transaction() as connection:
             correction_id = new_id()

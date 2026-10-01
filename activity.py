@@ -21,6 +21,17 @@ class ActivityHandler(JsonHandler):
     store = Store("activity", "CORE_DATABASE_URL", persist_state=False)
     repository = ActivityRepository("CORE_DATABASE_URL")
 
+    @classmethod
+    def metrics_extra(cls) -> dict[str, float]:
+        if not cls.repository.durable:
+            return {}
+        try:
+            return cls.repository.metrics()
+        except Exception:
+            # Metrics must never make the API unavailable when the database is
+            # restarting or a migration is in progress.
+            return {"myota_activity_metrics_database_unavailable": 1}
+
     @staticmethod
     def _claims(p: dict[str, str]) -> dict[str, Any]:
         authorization = p.get("Authorization", "")
