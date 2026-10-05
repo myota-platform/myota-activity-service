@@ -371,6 +371,24 @@ class ActivityRepository:
                                (status, seen, accepted, rejected, self._json(errors), import_id))
         return self.get_import(import_id)
 
+    def list_adif_objects_due_for_retention(self, cutoff: datetime, bucket: str, limit: int) -> list[dict[str, Any]]:
+        """Select only completed ADIF sources whose retention window has elapsed."""
+        with self.transaction() as connection:
+            rows = connection.execute(
+                "SELECT id, bucket, object_key FROM activity_import "
+                "WHERE status='COMPLETED' AND completed_at < %s AND source_deleted_at IS NULL AND bucket=%s "
+                "ORDER BY completed_at, id LIMIT %s",
+                (cutoff, bucket, limit),
+            ).fetchall()
+            return [{"id": self._iso(row["id"]), "bucket": row["bucket"], "objectKey": row["object_key"]} for row in rows]
+
+    def mark_adif_source_deleted(self, import_id: str) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                "UPDATE activity_import SET source_deleted_at=now() WHERE id=%s AND source_deleted_at IS NULL",
+                (import_id,),
+            )
+
     def claim_job(self) -> dict[str, Any] | None:
         with self.transaction() as connection:
             row = connection.execute("WITH next_job AS (SELECT id FROM activity_job WHERE status='QUEUED' AND available_at <= now() ORDER BY available_at,id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE activity_job j SET status='RUNNING',attempts=j.attempts+1,started_at=now() FROM next_job n WHERE j.id=n.id RETURNING j.*").fetchone()

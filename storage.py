@@ -122,6 +122,17 @@ class ObjectStore:
         except Exception:
             return None
 
+    def delete(self, bucket: str, object_key: str) -> None:
+        """Delete one object; missing objects are treated as already deleted."""
+        if self.local_root:
+            path = self.local_root / bucket / object_key
+            path.unlink(missing_ok=True)
+            return
+        client = self._client()
+        if not client:
+            raise RuntimeError("boto3 is not installed")
+        client.delete_object(Bucket=bucket, Key=object_key)
+
     def presigned_put(self, bucket: str, object_key: str) -> str | None:
         if self.local_root:
             return None
