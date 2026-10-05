@@ -38,7 +38,7 @@ class FakeObjectStore:
 
 
 class AdifRetentionTests(unittest.TestCase):
-    def test_repository_scope_is_completed_old_adif_objects_only(self) -> None:
+    def test_repository_scope_is_terminal_old_adif_objects_only(self) -> None:
         class FakeConnection:
             query = ""
             params = ()
@@ -92,8 +92,9 @@ class AdifRetentionTests(unittest.TestCase):
             def delete(self, bucket: str, object_key: str) -> None:
                 raise OSError("storage unavailable")
 
-        with self.assertRaisesRegex(RuntimeError, "completed-1"):
-            run_retention_pass(repository, FailingStore(), bucket="myota-adif")
+        with self.assertLogs("myota.adif_retention", level="ERROR"):
+            with self.assertRaisesRegex(RuntimeError, "completed-1"):
+                run_retention_pass(repository, FailingStore(), bucket="myota-adif")
 
         self.assertEqual(repository.marked, [])
 
