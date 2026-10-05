@@ -47,6 +47,13 @@ def main() -> int:
             continue
         content = store.get(source, str(asset["objectKey"]))
         if content is None:
+            if asset.get("contentStatus") == "MISSING":
+                # A registered placeholder with no stored object can be safely
+                # re-pointed; its next upload will create it in the new bucket.
+                AwardsHandler._save("assets", {**asset, "bucket": destination})
+                moved += 1
+                print(f"No stored object; updated placeholder metadata for {asset['id']}")
+                continue
             print(f"ERROR: source object not found; metadata unchanged for {asset['id']}", file=sys.stderr)
             failed += 1
             continue

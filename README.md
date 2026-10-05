@@ -35,8 +35,10 @@ in the [charter gap analysis](https://github.com/myota-platform/myota-docs/blob/
 - Object storage separates mutable background artwork (`myota-award-assets`), manager signatures (`myota-award-signatures`), issued PDFs (`myota-certificates`), and ADIF source logs (`myota-adif`). The API chooses an asset bucket from its kind; clients cannot override it. Bucket names are configurable with `MYOTA_AWARD_ASSET_BUCKET`, `MYOTA_AWARD_SIGNATURE_BUCKET`, `MYOTA_CERTIFICATE_BUCKET`, and `MYOTA_ADIF_BUCKET`.
 - Upgrade installations from the former shared `myota-awards` bucket with
   `migrate_award_asset_buckets.py` (dry-run first, then `--apply`). It copies,
-  verifies and updates metadata without deleting source objects; retire the
-  legacy bucket only after auditing references and backups.
+  verifies and updates metadata without deleting source objects; placeholders
+  marked `MISSING` are safely re-pointed without copying. Run with durable
+  activity-database and object-store connectivity. Retire the legacy bucket
+  only after auditing references and backups.
 - Universal themed frontend with verified/candidate map distinction.
 - Bounded API concurrency, bounded PostgreSQL pools, durable outbox jobs and
   background workers for ADIF, award recalculation, certificate rendering,
