@@ -64,7 +64,7 @@ class AdifRetentionTests(unittest.TestCase):
         cutoff = datetime(2026, 9, 20, tzinfo=timezone.utc)
         repository.list_adif_objects_due_for_retention(cutoff, "myota-adif", 100)
 
-        self.assertIn("status='COMPLETED'", connection.query)
+        self.assertIn("status IN ('COMPLETED','FAILED')", connection.query)
         self.assertIn("completed_at < %s", connection.query)
         self.assertIn("source_deleted_at IS NULL", connection.query)
         self.assertIn("bucket=%s", connection.query)

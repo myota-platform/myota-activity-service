@@ -372,11 +372,11 @@ class ActivityRepository:
         return self.get_import(import_id)
 
     def list_adif_objects_due_for_retention(self, cutoff: datetime, bucket: str, limit: int) -> list[dict[str, Any]]:
-        """Select only completed ADIF sources whose retention window has elapsed."""
+        """Select completed or failed ADIF sources past their retention window."""
         with self.transaction() as connection:
             rows = connection.execute(
                 "SELECT id, bucket, object_key FROM activity_import "
-                "WHERE status='COMPLETED' AND completed_at < %s AND source_deleted_at IS NULL AND bucket=%s "
+                "WHERE status IN ('COMPLETED','FAILED') AND completed_at < %s AND source_deleted_at IS NULL AND bucket=%s "
                 "ORDER BY completed_at, id LIMIT %s",
                 (cutoff, bucket, limit),
             ).fetchall()

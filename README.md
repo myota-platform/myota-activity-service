@@ -31,9 +31,10 @@ in the [charter gap analysis](https://github.com/myota-platform/myota-docs/blob/
   programme rule evaluation.
 - ADIF upload safety gate, SeaweedFS-backed S3-compatible object storage, asynchronous parsing and
   import result tracking.
-- Completed ADIF source objects are removed from the dedicated `myota-adif`
-  bucket 15 days after processing. The import result and audit metadata remain
-  in PostgreSQL; queued, processing, and failed imports are not eligible.
+- Completed and failed ADIF source objects are removed from the dedicated
+  `myota-adif` bucket 15 days after their terminal processing timestamp. The
+  import result and diagnostics remain in PostgreSQL; queued and processing
+  imports are not eligible.
 - Programme-owned hunter/activator awards, nested conditions, levels, server-side progress, SeaweedFS/S3-backed assets, certificate rendering, participant requests and permanent issuance records are exposed by the same service on port 8004 under `/v1/awards`.
 - Object storage separates mutable background artwork (`myota-award-assets`), manager signatures (`myota-award-signatures`), issued PDFs (`myota-certificates`), and ADIF source logs (`myota-adif`). The API chooses an asset bucket from its kind; clients cannot override it. Bucket names are configurable with `MYOTA_AWARD_ASSET_BUCKET`, `MYOTA_AWARD_SIGNATURE_BUCKET`, `MYOTA_CERTIFICATE_BUCKET`, and `MYOTA_ADIF_BUCKET`.
 - Upgrade installations from the former shared `myota-awards` bucket with
@@ -91,8 +92,9 @@ stateless activity API replicas by default and separately scales workers.
 
 The ordered activity schema migrations in `migrations/` are service-owned and
 must be synchronized byte-for-byte to `myota-deploy/db/migrations/activity/`;
-the deployment runner applies them in numeric order. Migration `003` tracks
-when an ADIF source object is removed, so a failed object-store deletion remains
+the deployment runner applies them in numeric order. Migration `003` adds a
+retry marker for deleted ADIF sources; migration `004` indexes both completed
+and failed imports eligible for cleanup. A failed object-store deletion stays
 eligible for retry without deleting the durable import result.
 
 ## Architecture

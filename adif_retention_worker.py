@@ -1,4 +1,4 @@
-"""Delete completed ADIF source objects after the configured retention window."""
+"""Delete completed and failed ADIF source objects after their retention window."""
 from __future__ import annotations
 
 import argparse
