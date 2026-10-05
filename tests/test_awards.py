@@ -21,6 +21,8 @@ class AwardServiceTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         os.environ.pop("MYOTA_OBJECT_STORAGE_LOCAL_DIR", None)
+        os.environ.pop("MYOTA_AWARD_ASSET_BUCKET", None)
+        os.environ.pop("MYOTA_AWARD_SIGNATURE_BUCKET", None)
 
     def _template(self) -> dict:
         kinds = ("AWARD_NAME", "CALLSIGN", "PERSON_NAME", "DATE_OBTAINED", "MANAGER_NAME", "MANAGER_SIGNATURE")
@@ -40,6 +42,9 @@ class AwardServiceTests(unittest.TestCase):
             "objectKey": "backgrounds/a4.png", "mediaType": "image/png", "widthPx": 2481, "heightPx": 3508}})
         signature = AwardsHandler.register_asset(None, {"_body": {"kind": "SIGNATURE", "name": "Award manager",
             "objectKey": "signatures/manager.png", "mediaType": "image/png", "widthPx": 1200, "heightPx": 360}})
+        self.assertEqual(background["bucket"], "myota-award-assets")
+        self.assertEqual(signature["bucket"], "myota-award-signatures")
+        self.assertNotEqual(background["bucket"], signature["bucket"])
         award = AwardsHandler.save_award(None, {"_body": {"programmeSlug": "regional-ota", "code": "SEVILLA-50",
             "name": "Sevilla Fifty", "category": "HUNTER", "achievementMetric": "QSO_COUNT",
             "condition": {"kind": "ENTITY_TYPE", "values": ["MUNICIPAL_PARK"]},
@@ -76,7 +81,18 @@ class AwardServiceTests(unittest.TestCase):
             stored = AwardsHandler.asset_content(None, {"assetId": asset["id"], "_body": {"contentBase64": content}})
             self.assertEqual(stored["contentStatus"], "STORED")
             self.assertTrue(stored["contentSha256"])
-            self.assertTrue(os.path.exists(os.path.join(directory, "myota-awards", "signatures", "manager.bin")))
+            self.assertTrue(os.path.exists(os.path.join(directory, "myota-award-signatures", "signatures", "manager.bin")))
+
+    def test_asset_kind_selects_configured_bucket_and_request_cannot_override_it(self) -> None:
+        os.environ["MYOTA_AWARD_ASSET_BUCKET"] = "custom-backgrounds"
+        os.environ["MYOTA_AWARD_SIGNATURE_BUCKET"] = "custom-signatures"
+        background = AwardsHandler.register_asset(None, {"_body": {"kind": "BACKGROUND", "name": "Background",
+            "objectKey": "bg.png", "mediaType": "image/png", "widthPx": 1, "heightPx": 1,
+            "bucket": "caller-controlled-bucket"}})
+        signature = AwardsHandler.register_asset(None, {"_body": {"kind": "SIGNATURE", "name": "Signature",
+            "objectKey": "sig.png", "mediaType": "image/png", "widthPx": 1, "heightPx": 1}})
+        self.assertEqual(background["bucket"], "custom-backgrounds")
+        self.assertEqual(signature["bucket"], "custom-signatures")
 
     def test_patch_award_alias_delegates_draft_edit_and_submission(self) -> None:
         background = AwardsHandler.register_asset(None, {"_body": {"kind": "BACKGROUND", "name": "A4",

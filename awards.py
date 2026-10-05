@@ -408,10 +408,15 @@ class AwardsHandler(JsonHandler):
         require(body, "kind", "name", "objectKey", "mediaType", "widthPx", "heightPx")
         if body["kind"] not in ASSET_KINDS or not str(body["mediaType"]).startswith("image/"):
             raise ValueError("asset kind must be BACKGROUND or SIGNATURE and mediaType must be an image")
+        # Keep editable award artwork, manager signatures, and immutable issued
+        # certificates in separate buckets so retention/access policies cannot
+        # accidentally cross asset classes. The caller cannot override this.
+        bucket_env = "MYOTA_AWARD_ASSET_BUCKET" if body["kind"] == "BACKGROUND" else "MYOTA_AWARD_SIGNATURE_BUCKET"
+        default_bucket = "myota-award-assets" if body["kind"] == "BACKGROUND" else "myota-award-signatures"
         asset = {"id": body.get("assetId") or new_id(), "kind": body["kind"], "name": body["name"],
                  "objectKey": body["objectKey"], "mediaType": body["mediaType"], "widthPx": int(body["widthPx"]),
                  "heightPx": int(body["heightPx"]), "sha256": body.get("sha256"), "storage": "S3",
-                 "bucket": body.get("bucket") or os.environ.get("MYOTA_OBJECT_STORAGE_BUCKET", "myota-awards"),
+                 "bucket": os.environ.get(bucket_env, default_bucket),
                  "objectStorageEndpoint": os.environ.get("MYOTA_OBJECT_STORAGE_PUBLIC_ENDPOINT", os.environ.get("MYOTA_OBJECT_STORAGE_ENDPOINT", "http://seaweedfs:8333")),
                  "contentStatus": "MISSING",
                  "createdAt": now()}
