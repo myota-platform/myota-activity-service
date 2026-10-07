@@ -1,4 +1,5 @@
 """S3-compatible object storage adapter used by activity and awards."""
+
 from __future__ import annotations
 
 import base64
@@ -12,12 +13,24 @@ class ObjectStore:
     """Use SeaweedFS or another S3-compatible store, with a test-only filesystem adapter."""
 
     def __init__(self) -> None:
-        self.endpoint = os.environ.get("MYOTA_OBJECT_STORAGE_ENDPOINT", "http://seaweedfs:8333")
-        self.presign_endpoint = os.environ.get("MYOTA_OBJECT_STORAGE_PUBLIC_ENDPOINT", self.endpoint)
-        self.access_key = os.environ.get("MYOTA_OBJECT_STORAGE_ACCESS_KEY", "myota-s3")
-        self.secret_key = os.environ.get("MYOTA_OBJECT_STORAGE_SECRET_KEY", "myota-s3-dev-only")
-        self.region = os.environ.get("MYOTA_OBJECT_STORAGE_REGION", "us-east-1")
-        self.addressing_style = os.environ.get("MYOTA_OBJECT_STORAGE_ADDRESSING_STYLE", "path")
+        self.endpoint = os.environ.get(
+            "MYOTA_OBJECT_STORAGE_ENDPOINT", "http://seaweedfs:8333"
+        )
+        self.presign_endpoint = os.environ.get(
+            "MYOTA_OBJECT_STORAGE_PUBLIC_ENDPOINT", self.endpoint
+        )
+        self.access_key = os.environ.get(
+            "MYOTA_OBJECT_STORAGE_ACCESS_KEY", "myota-s3"
+        )
+        self.secret_key = os.environ.get(
+            "MYOTA_OBJECT_STORAGE_SECRET_KEY", "myota-s3-dev-only"
+        )
+        self.region = os.environ.get(
+            "MYOTA_OBJECT_STORAGE_REGION", "us-east-1"
+        )
+        self.addressing_style = os.environ.get(
+            "MYOTA_OBJECT_STORAGE_ADDRESSING_STYLE", "path"
+        )
         local_root = os.environ.get("MYOTA_OBJECT_STORAGE_LOCAL_DIR", "")
         self.local_root = Path(local_root) if local_root else None
         self._clients: dict[str, object | None] = {}
@@ -52,12 +65,19 @@ class ObjectStore:
         return bool(self.local_root or self._client())
 
     @staticmethod
-    def scan_content(content: bytes, filename: str = "upload") -> dict[str, object]:
+    def scan_content(
+        content: bytes, filename: str = "upload"
+    ) -> dict[str, object]:
         """Run the local safety gate and optionally ask a ClamAV HTTP sidecar."""
-        max_bytes = int(os.environ.get("MYOTA_UPLOAD_MAX_BYTES", str(25 * 1024 * 1024)))
+        max_bytes = int(
+            os.environ.get("MYOTA_UPLOAD_MAX_BYTES", str(25 * 1024 * 1024))
+        )
         if len(content) > max_bytes:
             raise ValueError(f"{filename} exceeds the configured upload limit")
-        if b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*" in content:
+        if (
+            b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+            in content
+        ):
             raise ValueError("malware scan rejected the upload")
         scanner_url = os.environ.get("MYOTA_CLAMAV_URL", "").strip()
         if scanner_url:
@@ -65,15 +85,24 @@ class ObjectStore:
                 scanner_url,
                 data=content,
                 method="POST",
-                headers={"Content-Type": "application/octet-stream", "X-Upload-Name": filename},
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "X-Upload-Name": filename,
+                },
             )
             try:
                 with urllib.request.urlopen(request, timeout=10) as response:
                     if response.status >= 300:
                         raise ValueError("malware scanner rejected the upload")
             except Exception as exc:
-                raise ValueError("malware scanner is unavailable; upload was not stored") from exc
-        return {"status": "CLEAN", "sha256": hashlib.sha256(content).hexdigest(), "size": len(content)}
+                raise ValueError(
+                    "malware scanner is unavailable; upload was not stored"
+                ) from exc
+        return {
+            "status": "CLEAN",
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "size": len(content),
+        }
 
     def _local_path(self, bucket: str, object_key: str) -> Path:
         if not self.local_root:
@@ -91,13 +120,21 @@ class ObjectStore:
             return
         except ClientError as exc:
             error = exc.response.get("Error", {})
-            status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            status = exc.response.get("ResponseMetadata", {}).get(
+                "HTTPStatusCode"
+            )
             code = str(error.get("Code", ""))
-            if status != 404 and code not in {"404", "NoSuchBucket", "NotFound"}:
+            if status != 404 and code not in {
+                "404",
+                "NoSuchBucket",
+                "NotFound",
+            }:
                 raise
         client.create_bucket(Bucket=bucket)
 
-    def put(self, bucket: str, object_key: str, content: bytes, content_type: str) -> dict[str, object]:
+    def put(
+        self, bucket: str, object_key: str, content: bytes, content_type: str
+    ) -> dict[str, object]:
         checksum = hashlib.sha256(content).hexdigest()
         if self.local_root:
             self._local_path(bucket, object_key).write_bytes(content)
@@ -106,8 +143,17 @@ class ObjectStore:
             if not client:
                 raise RuntimeError("boto3 is not installed")
             self._ensure_bucket(client, bucket)
-            client.put_object(Bucket=bucket, Key=object_key, Body=content, ContentType=content_type)
-        return {"sha256": checksum, "size": len(content), "storedAt": object_key}
+            client.put_object(
+                Bucket=bucket,
+                Key=object_key,
+                Body=content,
+                ContentType=content_type,
+            )
+        return {
+            "sha256": checksum,
+            "size": len(content),
+            "storedAt": object_key,
+        }
 
     def get(self, bucket: str, object_key: str) -> bytes | None:
         if self.local_root:
@@ -141,21 +187,29 @@ class ObjectStore:
             return None
         self._ensure_bucket(internal, bucket)
         client = self._client_for(self.presign_endpoint)
-        return client.generate_presigned_url(
-            "put_object",
-            Params={"Bucket": bucket, "Key": object_key},
-            ExpiresIn=900,
-        ) if client else None
+        return (
+            client.generate_presigned_url(
+                "put_object",
+                Params={"Bucket": bucket, "Key": object_key},
+                ExpiresIn=900,
+            )
+            if client
+            else None
+        )
 
     def presigned_get(self, bucket: str, object_key: str) -> str | None:
         if self.local_root:
             return None
         client = self._client_for(self.presign_endpoint)
-        return client.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": bucket, "Key": object_key},
-            ExpiresIn=900,
-        ) if client else None
+        return (
+            client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": bucket, "Key": object_key},
+                ExpiresIn=900,
+            )
+            if client
+            else None
+        )
 
 
 def decode_base64(value: str) -> bytes:

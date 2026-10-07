@@ -1,4 +1,5 @@
 """Bounded background worker for activity imports, awards, documents, and notices."""
+
 from __future__ import annotations
 
 import asyncio
@@ -17,106 +18,255 @@ def process_adif(repo: ActivityRepository, payload: dict[str, Any]) -> None:
     record = repo.start_import(import_id)
     content = ObjectStore().get(record["bucket"], record["objectKey"])
     if content is None:
-        repo.finish_import(import_id, 0, 0, 1, ["uploaded object is not available"], "FAILED")
-        repo.create_notification(record["activationId"], "ADIF_IMPORT_FAILED", {"importId": import_id, "reason": "object unavailable"}, f"adif:{import_id}:failed")
+        repo.finish_import(
+            import_id, 0, 0, 1, ["uploaded object is not available"], "FAILED"
+        )
+        repo.create_notification(
+            record["activationId"],
+            "ADIF_IMPORT_FAILED",
+            {"importId": import_id, "reason": "object unavailable"},
+            f"adif:{import_id}:failed",
+        )
         return
     try:
         ObjectStore.scan_content(content, record["filename"])
         rows = parse_adif(content.decode("utf-8", errors="strict"))
     except Exception as exc:
         repo.finish_import(import_id, 0, 0, 1, [str(exc)], "FAILED")
-        repo.create_notification(record["activationId"], "ADIF_IMPORT_FAILED", {"importId": import_id, "reason": str(exc)}, f"adif:{import_id}:failed")
+        repo.create_notification(
+            record["activationId"],
+            "ADIF_IMPORT_FAILED",
+            {"importId": import_id, "reason": str(exc)},
+            f"adif:{import_id}:failed",
+        )
         return
     activation = repo.get_activation(record["activationId"])
     normalized = []
     errors = []
     for index, row in enumerate(rows, start=1):
         try:
-            row = normalize_qso({**row, "source": "adif", "sourceImportId": import_id})
-            row["deduplicationKey"] = qso_deduplication_key(record["activationId"], row)
+            row = normalize_qso(
+                {**row, "source": "adif", "sourceImportId": import_id}
+            )
+            row["deduplicationKey"] = qso_deduplication_key(
+                record["activationId"], row
+            )
             normalized.append(row)
         except Exception as exc:
             errors.append(f"record {index}: {exc}")
-    accepted = repo.insert_qso_batch(record["activationId"], normalized) if normalized else []
-    result = repo.finish_import(import_id, len(rows), len(accepted), len(rows) - len(accepted) + len(errors), errors)
+    accepted = (
+        repo.insert_qso_batch(record["activationId"], normalized)
+        if normalized
+        else []
+    )
+    result = repo.finish_import(
+        import_id,
+        len(rows),
+        len(accepted),
+        len(rows) - len(accepted) + len(errors),
+        errors,
+    )
     if errors or len(accepted) != len(rows):
-        repo.create_notification(activation["operatorId"], "ADIF_IMPORT_COMPLETED_WITH_ERRORS", {"importId": import_id, "result": result}, f"adif:{import_id}:completed")
+        repo.create_notification(
+            activation["operatorId"],
+            "ADIF_IMPORT_COMPLETED_WITH_ERRORS",
+            {"importId": import_id, "result": result},
+            f"adif:{import_id}:completed",
+        )
     else:
-        repo.create_notification(activation["operatorId"], "ADIF_IMPORT_COMPLETED", {"importId": import_id, "result": result}, f"adif:{import_id}:completed")
+        repo.create_notification(
+            activation["operatorId"],
+            "ADIF_IMPORT_COMPLETED",
+            {"importId": import_id, "result": result},
+            f"adif:{import_id}:completed",
+        )
 
 
-def process_award_recalculation(repo: ActivityRepository, payload: dict[str, Any]) -> None:
+def process_award_recalculation(
+    repo: ActivityRepository, payload: dict[str, Any]
+) -> None:
     programme = payload.get("programmeSlug")
     subjects = {str(value) for value in payload.get("subjectIds", []) if value}
     definitions = repo.list_collection("definitions")
     award_id = payload.get("awardId")
     if award_id:
-        definitions = [award for award in definitions if str(award.get("id")) == str(award_id)]
+        definitions = [
+            award
+            for award in definitions
+            if str(award.get("id")) == str(award_id)
+        ]
     for award in definitions:
-        if award.get("programmeSlug") != programme or award.get("status") not in {"PUBLISHED", "RETIRED"}:
+        if award.get("programmeSlug") != programme or award.get(
+            "status"
+        ) not in {"PUBLISHED", "RETIRED"}:
             continue
-        if payload.get("ruleVersion") is not None and int(award.get("version", 1)) != int(payload["ruleVersion"]):
+        if payload.get("ruleVersion") is not None and int(
+            award.get("version", 1)
+        ) != int(payload["ruleVersion"]):
             continue
-        award_subjects = sorted(subjects or set(repo.list_subject_ids(programme, award.get("category", "HUNTER"))))
+        award_subjects = sorted(
+            subjects
+            or set(
+                repo.list_subject_ids(
+                    programme, award.get("category", "HUNTER")
+                )
+            )
+        )
         for subject_id in award_subjects:
-            facts = repo.subject_facts(programme, subject_id, award.get("category", "HUNTER"))
+            facts = repo.subject_facts(
+                programme, subject_id, award.get("category", "HUNTER")
+            )
             condition_met = evaluate_condition(award["condition"], facts)
-            metric_field = {"QSO_COUNT": "qsoCount", "UNIQUE_CALLSIGNS": "uniqueCallsignCount", "UNIQUE_ENTITIES": "uniqueEntityCount", "ACTIVATION_COUNT": "activationCount"}.get(award.get("achievementMetric", "QSO_COUNT"), award.get("achievementMetric", "qsoCount"))
+            metric_field = {
+                "QSO_COUNT": "qsoCount",
+                "UNIQUE_CALLSIGNS": "uniqueCallsignCount",
+                "UNIQUE_ENTITIES": "uniqueEntityCount",
+                "ACTIVATION_COUNT": "activationCount",
+            }.get(
+                award.get("achievementMetric", "QSO_COUNT"),
+                award.get("achievementMetric", "qsoCount"),
+            )
             progress = float(facts.get(metric_field, 0))
-            levels = [{**level, "eligible": condition_met and progress >= float(level["threshold"])} for level in award.get("levels", [])]
-            repo.save_progress(award, subject_id, award.get("category", "HUNTER"), facts, {"conditionMet": condition_met, "metric": award.get("achievementMetric", "QSO_COUNT"), "progress": progress, "levels": levels, "ruleVersion": award.get("version", 1)})
+            levels = [
+                {
+                    **level,
+                    "eligible": condition_met
+                    and progress >= float(level["threshold"]),
+                }
+                for level in award.get("levels", [])
+            ]
+            repo.save_progress(
+                award,
+                subject_id,
+                award.get("category", "HUNTER"),
+                facts,
+                {
+                    "conditionMet": condition_met,
+                    "metric": award.get("achievementMetric", "QSO_COUNT"),
+                    "progress": progress,
+                    "levels": levels,
+                    "ruleVersion": award.get("version", 1),
+                },
+            )
             if any(level.get("eligible") for level in levels):
-                eligible_level_key = ",".join(str(level["id"]) for level in levels if level.get("eligible"))
-                repo.create_notification(subject_id, "AWARD_QUALIFIED", {"awardId": award["id"], "awardCode": award["code"], "levels": levels}, f"award-qualified:{award['id']}:{award.get('version', 1)}:{subject_id}:{eligible_level_key}")
+                eligible_level_key = ",".join(
+                    str(level["id"])
+                    for level in levels
+                    if level.get("eligible")
+                )
+                repo.create_notification(
+                    subject_id,
+                    "AWARD_QUALIFIED",
+                    {
+                        "awardId": award["id"],
+                        "awardCode": award["code"],
+                        "levels": levels,
+                    },
+                    f"award-qualified:{award['id']}:{award.get('version', 1)}:{subject_id}:{eligible_level_key}",
+                )
 
 
 def process_pdf(repo: ActivityRepository, payload: dict[str, Any]) -> None:
     issuance_id = payload["issuanceId"]
-    AwardsHandler.render_issuance(None, {"issuanceId": issuance_id, "_body": {}})
+    AwardsHandler.render_issuance(
+        None, {"issuanceId": issuance_id, "_body": {}}
+    )
 
 
-def process_statistics(repo: ActivityRepository, payload: dict[str, Any]) -> None:
+def process_statistics(
+    repo: ActivityRepository, payload: dict[str, Any]
+) -> None:
     repo.rebuild_statistics(payload.get("programmeSlug"))
 
 
-def process_qso_ingestion(repo: ActivityRepository, payload: dict[str, Any]) -> None:
-    activation = repo.get_activation(payload["activationId"])
+def process_qso_ingestion(
+    repo: ActivityRepository, payload: dict[str, Any]
+) -> None:
+    repo.get_activation(payload["activationId"])
     normalized = []
     for row in payload["records"]:
-        record = normalize_qso({**row, "source": payload.get("sourceFormat", "JSON")})
-        record["deduplicationKey"] = qso_deduplication_key(payload["activationId"], record)
+        record = normalize_qso(
+            {**row, "source": payload.get("sourceFormat", "JSON")}
+        )
+        record["deduplicationKey"] = qso_deduplication_key(
+            payload["activationId"], record
+        )
         normalized.append(record)
     repo.insert_qso_batch(payload["activationId"], normalized)
 
 
-def process_award_evaluation(repo: ActivityRepository, payload: dict[str, Any]) -> None:
+def process_award_evaluation(
+    repo: ActivityRepository, payload: dict[str, Any]
+) -> None:
     award = repo.get_collection_record("definitions", payload["awardId"])
     subject_id = payload["subjectId"]
-    facts = payload.get("facts") or repo.subject_facts(award["programmeSlug"], subject_id, award.get("category", "HUNTER"))
+    facts = payload.get("facts") or repo.subject_facts(
+        award["programmeSlug"], subject_id, award.get("category", "HUNTER")
+    )
     condition_met = evaluate_condition(award["condition"], facts)
-    metric_field = {"QSO_COUNT": "qsoCount", "UNIQUE_CALLSIGNS": "uniqueCallsignCount", "UNIQUE_ENTITIES": "uniqueEntityCount", "ACTIVATION_COUNT": "activationCount"}.get(award.get("achievementMetric", "QSO_COUNT"), award.get("achievementMetric", "qsoCount"))
+    metric_field = {
+        "QSO_COUNT": "qsoCount",
+        "UNIQUE_CALLSIGNS": "uniqueCallsignCount",
+        "UNIQUE_ENTITIES": "uniqueEntityCount",
+        "ACTIVATION_COUNT": "activationCount",
+    }.get(
+        award.get("achievementMetric", "QSO_COUNT"),
+        award.get("achievementMetric", "qsoCount"),
+    )
     progress = float(facts.get(metric_field, 0))
-    levels = [{**level, "eligible": condition_met and progress >= float(level["threshold"])} for level in award.get("levels", [])]
-    repo.save_progress(award, subject_id, award.get("category", "HUNTER"), facts,
-                       {"awardId": award["id"], "subjectId": subject_id, "conditionMet": condition_met,
-                        "metric": award.get("achievementMetric", "QSO_COUNT"), "progress": progress,
-                        "levels": levels, "ruleVersion": award.get("version", 1)})
+    levels = [
+        {
+            **level,
+            "eligible": condition_met
+            and progress >= float(level["threshold"]),
+        }
+        for level in award.get("levels", [])
+    ]
+    repo.save_progress(
+        award,
+        subject_id,
+        award.get("category", "HUNTER"),
+        facts,
+        {
+            "awardId": award["id"],
+            "subjectId": subject_id,
+            "conditionMet": condition_met,
+            "metric": award.get("achievementMetric", "QSO_COUNT"),
+            "progress": progress,
+            "levels": levels,
+            "ruleVersion": award.get("version", 1),
+        },
+    )
     if any(level.get("eligible") for level in levels):
-        repo.create_notification(subject_id, "AWARD_QUALIFIED", {"awardId": award["id"], "levels": levels},
-                                 f"award-qualified:{award['id']}:{award.get('version', 1)}:{subject_id}")
+        repo.create_notification(
+            subject_id,
+            "AWARD_QUALIFIED",
+            {"awardId": award["id"], "levels": levels},
+            f"award-qualified:{award['id']}:{award.get('version', 1)}:{subject_id}",
+        )
 
 
-def process_notification(repo: ActivityRepository, payload: dict[str, Any]) -> None:
+def process_notification(
+    repo: ActivityRepository, payload: dict[str, Any]
+) -> None:
     with repo.transaction() as connection:
-        connection.execute("UPDATE activity_notification SET status='DELIVERED',delivered_at=now() WHERE id=%s AND status='QUEUED'", (payload["notificationId"],))
+        connection.execute(
+            "UPDATE activity_notification SET status='DELIVERED',delivered_at=now() WHERE id=%s AND status='QUEUED'",
+            (payload["notificationId"],),
+        )
 
 
 def process(repo: ActivityRepository, job: dict[str, Any]) -> None:
     AwardsHandler.repository = repo
-    handlers = {"ADIF_IMPORT": process_adif, "QSO_INGESTION": process_qso_ingestion,
-                "AWARD_RECALCULATE": process_award_recalculation, "AWARD_EVALUATION": process_award_evaluation,
-                "PDF_RENDER": process_pdf, "STATISTICS_REBUILD": process_statistics,
-                "NOTIFICATION_SEND": process_notification}
+    handlers = {
+        "ADIF_IMPORT": process_adif,
+        "QSO_INGESTION": process_qso_ingestion,
+        "AWARD_RECALCULATE": process_award_recalculation,
+        "AWARD_EVALUATION": process_award_evaluation,
+        "PDF_RENDER": process_pdf,
+        "STATISTICS_REBUILD": process_statistics,
+        "NOTIFICATION_SEND": process_notification,
+    }
     handler = handlers.get(job["kind"])
     if not handler:
         raise ValueError(f"unsupported activity job kind: {job['kind']}")
@@ -126,11 +276,17 @@ def process(repo: ActivityRepository, job: dict[str, Any]) -> None:
 async def main() -> None:
     repo = ActivityRepository("ACTIVITY_DATABASE_URL")
     if not repo.durable:
-        raise RuntimeError("ACTIVITY_DATABASE_URL is required for the activity worker")
+        raise RuntimeError(
+            "ACTIVITY_DATABASE_URL is required for the activity worker"
+        )
     while True:
         job = await asyncio.to_thread(repo.claim_job)
         if not job:
-            await asyncio.sleep(float(os.environ.get("MYOTA_ACTIVITY_WORKER_POLL_SECONDS", "1")))
+            await asyncio.sleep(
+                float(
+                    os.environ.get("MYOTA_ACTIVITY_WORKER_POLL_SECONDS", "1")
+                )
+            )
             continue
         try:
             await asyncio.to_thread(process, repo, job)
