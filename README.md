@@ -1,4 +1,4 @@
-# MyOTA Outdoor Activation Platform
+# MyOTA activity and awards service
 
 MyOTA is a programme-agnostic platform for outdoor activation programmes. MPOTA is represented as a configured programme, not as the platform itself. No rules or charter text are copied from POTA or any other programme: every programme supplies its own configuration, policy, eligibility, awards and public charter.
 
@@ -16,10 +16,9 @@ in the [charter gap analysis](https://github.com/myota-platform/myota-docs/blob/
 
 ## What works now
 
-- Amateur-radio-aware identity: operator/SWL participation, multiple callsigns, one primary callsign, lifecycle and verification fields.
-- Shared entity-category catalogue and programme assignments; activity owns programme execution, QSO rules, minimum QSOs, awards, themes and optional OIDC settings.
-- Geodata lifecycle: imported candidate → community proposal → approver review → approved entity.
-- Provenance-aware imports with adapter metadata for ParkServe, OSM, government GIS and manual proposals.
+- Activity consumes identity/callsign authorization and programme-owned rule
+  inputs through service APIs. Identity, shared categories, themes, OIDC and
+  geodata import/review remain owned by their respective services.
 - Relational, indexed activation/QSO storage with deduplication, idempotency,
   aggregate facts and PostgreSQL `COPY` batch ingestion; the generic JSONB
   state store is not used in durable activity mode.
@@ -43,7 +42,6 @@ in the [charter gap analysis](https://github.com/myota-platform/myota-docs/blob/
   marked `MISSING` are safely re-pointed without copying. Run with durable
   activity-database and object-store connectivity. Retire the legacy bucket
   only after auditing references and backups.
-- Universal themed frontend with verified/candidate map distinction.
 - Bounded API concurrency, bounded PostgreSQL pools, durable outbox jobs and
   background workers for ADIF, award recalculation, certificate rendering,
   statistics and notifications.
@@ -67,11 +65,12 @@ The unit-test adapter remains in-memory for fast contract tests. When
 activity-owned relational schema and never rewrites a service-wide JSON state
 snapshot.
 
-## Run the vertical slice
+## Test and run locally
 
 ```bash
+python3 -m pip install -r requirements.txt
 python3 -m unittest discover -s tests -v
-python3 services/dev_server.py
+python3 run_activity.py
 ```
 
 Open <http://127.0.0.1:8004/healthz> for the activity service. Activations and awards intentionally share this port; the gateway exposes the same paths without a second awards service.
@@ -99,8 +98,14 @@ eligible for retry without deleting the durable import result.
 
 ## Architecture
 
-Read [`docs/architecture.md`](docs/architecture.md), [`docs/adr/0001-storage-topology.md`](docs/adr/0001-storage-topology.md), and [`docs/repository-map.md`](docs/repository-map.md). The current bootstrap is kept together to make the vertical slice easy to run; the repository map defines the justified GitHub split once the MyOTA organization is available.
+Read the authoritative [architecture](https://github.com/myota-platform/myota-docs/blob/main/docs/architecture.md)
+and [repository map](https://github.com/myota-platform/myota-docs/blob/main/docs/repository-map.md).
+The geodata deletion worker calls activity APIs for impact, QSO cascade and
+award recalculation before removing an entity; activity data stays in
+`myota_activity`, never the geo database. See the
+[deletion and scaling delivery record](https://github.com/myota-platform/myota-docs/blob/main/docs/geodata-horizontal-scaling-roadmap.md#latest-delivery-and-evidence--7-october-2026).
 
 ## Source project
 
-The original `ea7klk/mpota` repository remains untouched. Its charter and planned flows are treated as the migration source; see [`docs/migration-from-mpota.md`](docs/migration-from-mpota.md).
+The original `ea7klk/mpota` repository remains untouched; see the
+[migration strategy](https://github.com/myota-platform/myota-docs/blob/main/docs/migration-from-mpota.md).
