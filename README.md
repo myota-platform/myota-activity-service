@@ -8,6 +8,15 @@ statistics. Activity and awards intentionally share one API process and port
 (`8004`). Deployment and migration orchestration live in `myota-deploy`; the
 versioned activity migration in `migrations/` is copied and applied there.
 
+Notification workers share the JetStream pull durable
+`activity-notifications-pull-v1` and can overlap during rolling updates or
+scaling. The database consumer identity remains `activity-notifications` so
+replaying retained events does not duplicate processed notifications. Explicit
+ACKs, bounded pending deliveries and SIGTERM draining protect in-flight work.
+See the [notification rollout runbook](https://github.com/myota-platform/myota-docs/blob/main/docs/operations.md#activity-notification-consumer-rollouts)
+for the transition from the obsolete push consumer. Broker overlap and restart
+regressions run before publishing the service image.
+
 The platform purpose and the distinction between reusable activity capability
 and programme-owned policy are documented in the
 [MyOTA charter](https://github.com/myota-platform/myota-docs/blob/main/docs/project-charter.md).

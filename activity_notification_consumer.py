@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import signal
 import sys
 from typing import Any
 
@@ -33,6 +35,10 @@ def recipient_and_kind(event: dict[str, Any]) -> tuple[str | None, str | None]:
 
 
 async def main() -> None:
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for signal_number in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(signal_number, stop_event.set)
     repo = ActivityRepository("ACTIVITY_DATABASE_URL")
     if not repo.durable:
         raise RuntimeError(
@@ -54,11 +60,16 @@ async def main() -> None:
             )
 
     await consume_forever(
-        "activity-notifications", "myota.events.>", repo.dsn, handle
+        "activity-notifications",
+        "myota.events.>",
+        repo.dsn,
+        handle,
+        stop_event=stop_event,
     )
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
