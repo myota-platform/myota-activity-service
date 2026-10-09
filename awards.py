@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import math
 import os
-from io import BytesIO
+import base64
+import threading
 from http.server import ThreadingHTTPServer
 from typing import Any
 
@@ -27,12 +28,13 @@ from storage import ObjectStore, decode_base64
 PAGE_SIZES_MM = {"A4": (210.0, 297.0), "LETTER": (215.9, 279.4)}
 ASSET_KINDS = {"BACKGROUND", "SIGNATURE"}
 CATEGORIES = {"HUNTER", "ACTIVATOR"}
+PREVIEW_RENDERER = threading.BoundedSemaphore(1)
 
 
 def _render_certificate(issuance: dict[str, Any]) -> dict[str, Any] | None:
     """Render an issued certificate when both registered image assets are available."""
     try:
-        from PIL import Image, ImageDraw, ImageFont
+        from certificate_design import render_pdf
     except ImportError:
         return None
     store = ObjectStore()
@@ -43,23 +45,6 @@ def _render_certificate(issuance: dict[str, Any]) -> dict[str, Any] | None:
     signature_bytes = store.get(signature["bucket"], signature["objectKey"])
     if not background_bytes or not signature_bytes:
         return None
-    print_spec = spec["printSpec"]
-    dimensions = print_spec.get("recommended") or {
-        "widthPx": math.ceil(
-            PAGE_SIZES_MM[print_spec["page"]][0] / 25.4 * print_spec["dpi"]
-        ),
-        "heightPx": math.ceil(
-            PAGE_SIZES_MM[print_spec["page"]][1] / 25.4 * print_spec["dpi"]
-        ),
-    }
-    canvas = (
-        Image.open(BytesIO(background_bytes))
-        .convert("RGB")
-        .resize((dimensions["widthPx"], dimensions["heightPx"]))
-    )
-    signature_image = Image.open(BytesIO(signature_bytes)).convert("RGBA")
-    draw = ImageDraw.Draw(canvas)
-    font = ImageFont.load_default()
     values = {
         "AWARD_NAME": issuance["awardName"],
         "CALLSIGN": issuance["callsign"],
@@ -67,45 +52,12 @@ def _render_certificate(issuance: dict[str, Any]) -> dict[str, Any] | None:
         "DATE_OBTAINED": issuance["dateObtained"],
         "MANAGER_NAME": issuance["managerName"],
     }
-    for element in spec["elements"]:
-        x, y = (
-            int(element["x"] * canvas.width),
-            int(element["y"] * canvas.height),
-        )
-        width, height = (
-            int(element["width"] * canvas.width),
-            int(element["height"] * canvas.height),
-        )
-        if element["kind"] == "MANAGER_SIGNATURE":
-            image = signature_image.copy()
-            image.thumbnail((max(1, width), max(1, height)))
-            canvas.paste(
-                image,
-                (
-                    x + (width - image.width) // 2,
-                    y + (height - image.height) // 2,
-                ),
-                image,
-            )
-            continue
-        text = str(values.get(element["kind"], ""))
-        bounds = draw.textbbox((0, 0), text, font=font)
-        draw.text(
-            (
-                x + max(0, (width - (bounds[2] - bounds[0])) // 2),
-                y + max(0, (height - (bounds[3] - bounds[1])) // 2),
-            ),
-            text,
-            fill="black",
-            font=font,
-        )
-    output = BytesIO()
-    canvas.save(output, format="PDF", resolution=print_spec["dpi"])
+    content = render_pdf(spec, values, background_bytes, signature_bytes)
     artifact = issuance["artifact"]
     stored = store.put(
         artifact["bucket"],
         artifact["objectKey"],
-        output.getvalue(),
+        content,
         "application/pdf",
     )
     download_url = store.presigned_get(
@@ -237,6 +189,8 @@ def _print_spec(
 
 
 def _validate_elements(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not isinstance(elements, list):
+        raise ValueError("template elements must be an array")
     required = {
         "AWARD_NAME",
         "CALLSIGN",
@@ -247,15 +201,19 @@ def _validate_elements(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
     }
     seen: set[str] = set()
     for element in elements:
+        if not isinstance(element, dict):
+            raise ValueError("template elements must be objects")
         kind = str(element.get("kind", ""))
-        if kind not in required:
+        if kind not in required | {"CUSTOM_TEXT"}:
             raise ValueError(
                 f"unsupported certificate element: {kind or 'missing'}"
             )
         seen.add(kind)
+        if kind == "CUSTOM_TEXT" and not str(element.get("label", "")).strip():
+            raise ValueError("custom text requires a label")
         for field in ("x", "y", "width", "height"):
             value = _number(element.get(field), f"template.{kind}.{field}")
-            if not 0 <= value <= 1:
+            if not math.isfinite(value) or not 0 <= value <= 1:
                 raise ValueError(
                     f"template.{kind}.{field} must be between 0 and 1"
                 )
@@ -264,6 +222,11 @@ def _validate_elements(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
             or _number(element.get("height"), "template.height") <= 0
         ):
             raise ValueError(f"template.{kind} must have positive dimensions")
+        if (
+            float(element["x"]) + float(element["width"]) > 1.000001
+            or float(element["y"]) + float(element["height"]) > 1.000001
+        ):
+            raise ValueError(f"template.{kind} must fit inside the page")
     missing = required - seen
     if missing:
         raise ValueError(
@@ -505,6 +468,15 @@ class AwardsHandler(JsonHandler):
             else now(),
         }
         record["printReadiness"] = _print_spec(background, record["printSpec"])
+        for field in ("signatureAssetId", "managerName", "effectiveFrom"):
+            if field in body:
+                record[field] = body[field]
+        if record.get("signatureAssetId"):
+            signature = AwardsHandler._bucket("assets").get(
+                record["signatureAssetId"]
+            )
+            if not signature or signature.get("kind") != "SIGNATURE":
+                raise ValueError("choose a registered signature asset")
         AwardsHandler._save("definitions", record)
         AwardsHandler.store.event(
             "awards.definition.saved.v1", "award", record_id, record
@@ -849,7 +821,137 @@ class AwardsHandler(JsonHandler):
     @staticmethod
     def list_assets(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
         AwardsHandler._authorize(p, {"awards.read", "awards.admin"})
-        return page_result(list(AwardsHandler._bucket("assets").values()))
+        from urllib.parse import parse_qs, urlparse
+
+        return page_result(
+            list(AwardsHandler._bucket("assets").values()),
+            parse_qs(urlparse(p.get("_path", "")).query),
+        )
+
+    @staticmethod
+    def put_asset_content(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
+        from certificate_design import image_metadata
+
+        AwardsHandler._authorize(p, {"awards.admin"})
+        asset = AwardsHandler._bucket("assets")[p["assetId"]]
+        content = p["_body"]["_imageBytes"]
+        metadata = image_metadata(content)
+        if metadata["mediaType"] != p["_body"].get("_mediaType"):
+            raise ValueError(
+                "declared media type does not match image content"
+            )
+        ObjectStore.scan_content(content, asset["objectKey"])
+        stored = ObjectStore().put(
+            asset["bucket"],
+            asset["objectKey"],
+            content,
+            metadata["mediaType"],
+        )
+        asset.update(
+            {
+                **metadata,
+                "contentStatus": "STORED",
+                "contentSha256": stored["sha256"],
+                "contentSize": stored["size"],
+                "storedAt": now(),
+            }
+        )
+        return AwardsHandler._save("assets", asset)
+
+    @staticmethod
+    def get_asset_content(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
+        from certificate_design import image_metadata
+
+        AwardsHandler._authorize(p, {"awards.read", "awards.admin"})
+        asset = AwardsHandler._bucket("assets")[p["assetId"]]
+        content = ObjectStore().get(asset["bucket"], asset["objectKey"])
+        if not content:
+            raise ValueError("registered image has no uploaded content")
+        metadata = image_metadata(content)
+        return {
+            "asset": asset,
+            "mediaType": metadata["mediaType"],
+            "contentBase64": base64.b64encode(content).decode(),
+        }
+
+    @staticmethod
+    def preview(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
+        """Render a transient design, never an issuance or persisted object."""
+        AwardsHandler._authorize(p, {"awards.admin"})
+        if not PREVIEW_RENDERER.acquire(blocking=False):
+            return {
+                "_status": 429,
+                "status": 429,
+                "code": "preview_busy",
+                "detail": "Preview renderer is busy; please retry shortly.",
+            }
+        try:
+            return AwardsHandler._preview_body(p["_body"])
+        finally:
+            PREVIEW_RENDERER.release()
+
+    @staticmethod
+    def _preview_body(body: dict[str, Any]) -> dict[str, Any]:
+        from certificate_design import render_pdf
+
+        require(body, "name", "template", "printSpec")
+        elements = _validate_elements(body["template"].get("elements", []))
+        if len(elements) > 30:
+            raise ValueError("a preview may contain at most 30 elements")
+        background = body.get("backgroundAsset") or {}
+        assets = AwardsHandler._bucket("assets")
+        background_bytes = None
+        if background.get("objectKey"):
+            registered = next(
+                (
+                    asset
+                    for asset in assets.values()
+                    if asset["kind"] == "BACKGROUND"
+                    and asset["objectKey"] == background["objectKey"]
+                ),
+                None,
+            )
+            if not registered:
+                raise ValueError("choose a registered background")
+            background_bytes = ObjectStore().get(
+                registered["bucket"], registered["objectKey"]
+            )
+            if not background_bytes:
+                raise ValueError("background content has not been uploaded")
+        signature_bytes = None
+        if body.get("signatureAssetId"):
+            signature = assets.get(body["signatureAssetId"])
+            if not signature or signature["kind"] != "SIGNATURE":
+                raise ValueError("choose a registered signature")
+            signature_bytes = ObjectStore().get(
+                signature["bucket"], signature["objectKey"]
+            )
+            if not signature_bytes:
+                raise ValueError("signature content has not been uploaded")
+        mock_data = {
+            "AWARD_NAME": str(body["name"])[:200],
+            "CALLSIGN": "EA7TEST",
+            "PERSON_NAME": "Demo Radio Operator",
+            "DATE_OBTAINED": now()[:10],
+            "MANAGER_NAME": str(
+                body.get("managerName") or "Demo Award Manager"
+            )[:200],
+            "MANAGER_SIGNATURE": "Signature preview",
+        }
+        content = render_pdf(
+            {"printSpec": body["printSpec"], "elements": elements},
+            mock_data,
+            background_bytes,
+            signature_bytes,
+            preview=True,
+        )
+        return {
+            "preview": True,
+            "mediaType": "application/pdf",
+            "filename": "myota-award-preview.pdf",
+            "mockData": mock_data,
+            "contentBase64": base64.b64encode(content).decode(),
+        }
 
     @staticmethod
     def evaluate(_: JsonHandler, p: dict[str, str]) -> dict[str, Any]:
@@ -1152,6 +1254,15 @@ AwardsHandler.routes = {
     ("POST", "/v1/awards"): AwardsHandler.save_award,
     ("GET", "/v1/awards/assets"): AwardsHandler.list_assets,
     ("POST", "/v1/awards/assets"): AwardsHandler.register_asset,
+    ("POST", "/v1/awards/previews"): AwardsHandler.preview,
+    (
+        "GET",
+        "/v1/awards/assets/{assetId}/content",
+    ): AwardsHandler.get_asset_content,
+    (
+        "PUT",
+        "/v1/awards/assets/{assetId}/content",
+    ): AwardsHandler.put_asset_content,
     ("GET", "/v1/awards/requests"): AwardsHandler.list_requests,
     ("GET", "/v1/awards/issuances"): AwardsHandler.list_issuances,
     ("GET", "/v1/awards/{awardId}"): AwardsHandler.get_award,

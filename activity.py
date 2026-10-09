@@ -22,6 +22,7 @@ from common import (
     new_id,
     now,
     page_result,
+    read_json,
     require,
     verify_token,
 )
@@ -35,6 +36,35 @@ class ActivityHandler(JsonHandler):
     # durable mode all activity and award writes use ActivityRepository.
     store = Store("activity", "ACTIVITY_DATABASE_URL", persist_state=False)
     repository = ActivityRepository("ACTIVITY_DATABASE_URL")
+
+    def read_request_body(self) -> dict[str, Any]:
+        if self.current_route == ("POST", "/v1/awards/previews"):
+            if int(self.headers.get("Content-Length", "0")) > 64 * 1024:
+                raise ValueError("preview design exceeds 64 KiB")
+        if self.current_route == (
+            "PUT",
+            "/v1/awards/assets/{assetId}/content",
+        ):
+            from certificate_design import MAX_ASSET_BYTES
+
+            self._authorize(
+                {
+                    "_http": "1",
+                    "Authorization": self.headers.get("Authorization", ""),
+                },
+                {"awards.admin"},
+            )
+            media_type = self.headers.get("Content-Type", "").split(";")[0]
+            if media_type not in {"image/png", "image/jpeg"}:
+                raise ValueError("upload must use image/png or image/jpeg")
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= MAX_ASSET_BYTES:
+                raise ValueError("image upload must be at most 20 MiB")
+            content = self.rfile.read(length)
+            if len(content) != length:
+                raise ValueError("image upload ended unexpectedly")
+            return {"_imageBytes": content, "_mediaType": media_type}
+        return read_json(self)
 
     @classmethod
     def metrics_extra(cls) -> dict[str, float]:

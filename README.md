@@ -76,6 +76,17 @@ snapshot.
 
 ## Test and run locally
 
+Certificate design supports authenticated raw PNG/JPEG `PUT` and content `GET`
+at `/v1/awards/assets/{assetId}/content`. Image bytes/dimensions are checked
+(20 MiB, 16 million pixels); kind determines the storage bucket. Transient
+`POST /v1/awards/previews` renders mock-data PDFs without issuance/storage side
+effects, bounded to 64 KiB requests, 30 elements, 150–300 DPI and one render per
+pod. `certificate_design.py` shares orientation-aware A4/Letter rendering with
+issuance. Drafts preserve signature/manager metadata and custom template text.
+See the [designer API and runbook](https://github.com/myota-platform/myota-docs/blob/main/docs/programme-and-award-design.md).
+The platform/deploy runtime copies must mirror these owner modules and the
+request-body hook; do not replace their unrelated shared HTTP infrastructure.
+
 ```bash
 python3 -m pip install -r requirements.txt
 python3 -m unittest discover -s tests -v

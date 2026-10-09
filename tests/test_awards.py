@@ -14,6 +14,10 @@ from awards import AwardsHandler, evaluate_condition
 
 class AwardServiceTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.object_directory = tempfile.TemporaryDirectory()
+        os.environ["MYOTA_OBJECT_STORAGE_LOCAL_DIR"] = (
+            self.object_directory.name
+        )
         AwardsHandler.store.items.clear()
         AwardsHandler.store.events.clear()
         AwardsHandler.store.data.clear()
@@ -23,6 +27,7 @@ class AwardServiceTests(unittest.TestCase):
         os.environ.pop("MYOTA_OBJECT_STORAGE_LOCAL_DIR", None)
         os.environ.pop("MYOTA_AWARD_ASSET_BUCKET", None)
         os.environ.pop("MYOTA_AWARD_SIGNATURE_BUCKET", None)
+        self.object_directory.cleanup()
 
     def _template(self) -> dict:
         kinds = (

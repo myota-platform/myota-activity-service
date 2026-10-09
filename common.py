@@ -528,11 +528,14 @@ class JsonHandler(BaseHTTPRequestHandler):
             if matched:
                 try:
                     self.current_route = (method, pattern)
-                    body = (
-                        read_json(self)
-                        if method in {"POST", "PUT", "PATCH", "DELETE"}
-                        else {}
-                    )
+                    if method in {"POST", "PUT", "PATCH", "DELETE"}:
+                        body = (
+                            self.read_request_body()
+                            if hasattr(self, "read_request_body")
+                            else read_json(self)
+                        )
+                    else:
+                        body = {}
                     result = fn(
                         self,
                         {
