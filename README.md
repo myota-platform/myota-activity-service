@@ -76,6 +76,10 @@ snapshot.
 
 ## Test and run locally
 
+Activation/QSO times, certificate dates, and award draft/publication effective
+dates use UTC. Offset-bearing effective dates normalize to the same UTC instant;
+legacy unqualified times mean UTC. See the [UTC policy](https://github.com/myota-platform/myota-docs/blob/main/docs/utc-time-policy.md).
+
 Certificate design supports authenticated raw PNG/JPEG `PUT` and content `GET`
 at `/v1/awards/assets/{assetId}/content`. Image bytes/dimensions are checked
 (20 MiB, 16 million pixels); kind determines the storage bucket. Transient

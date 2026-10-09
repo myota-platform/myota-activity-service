@@ -266,11 +266,12 @@ class AwardDesignTests(unittest.TestCase):
                 },
                 "signatureAssetId": signature["id"],
                 "managerName": "Award manager",
-                "effectiveFrom": "2026-10-09T12:00:00Z",
+                "effectiveFrom": "2026-10-09T14:00:00+02:00",
                 "template": template,
             },
         )
         saved["name"] = "Edited award"
+        self.assertEqual(saved["effectiveFrom"], "2026-10-09T12:00:00Z")
         updated = self.request(f"/v1/awards/{saved['id']}", "PATCH", saved)
         loaded = self.request(f"/v1/awards/{saved['id']}")
         self.assertEqual(updated["name"], "Edited award")

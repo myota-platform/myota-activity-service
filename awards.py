@@ -14,6 +14,8 @@ import threading
 from http.server import ThreadingHTTPServer
 from typing import Any
 
+from activity_domain import iso_timestamp, parse_timestamp
+
 from common import (
     JsonHandler,
     Store,
@@ -470,7 +472,11 @@ class AwardsHandler(JsonHandler):
         record["printReadiness"] = _print_spec(background, record["printSpec"])
         for field in ("signatureAssetId", "managerName", "effectiveFrom"):
             if field in body:
-                record[field] = body[field]
+                record[field] = (
+                    iso_timestamp(parse_timestamp(body[field]))
+                    if field == "effectiveFrom" and body[field]
+                    else body[field]
+                )
         if record.get("signatureAssetId"):
             signature = AwardsHandler._bucket("assets").get(
                 record["signatureAssetId"]
@@ -530,7 +536,9 @@ class AwardsHandler(JsonHandler):
         award.update(
             {
                 "status": "PUBLISHED",
-                "effectiveFrom": body["effectiveFrom"],
+                "effectiveFrom": iso_timestamp(
+                    parse_timestamp(body["effectiveFrom"])
+                ),
                 "publisherId": body["publisherId"],
                 "publishedAt": now(),
             }
