@@ -1706,10 +1706,27 @@ class ActivityRepository:
             }
 
     def cascade_delete_entity(
-        self, entity_id: str, deleted_by: str
+        self,
+        entity_id: str,
+        deleted_by: str,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         """Delete entity-linked QSOs, rebuild aggregates, and queue award recalculation."""
         with self.transaction() as connection:
+            if idempotency_key:
+                # Serialize concurrent retries for the same request key before
+                # checking the record so only one transaction can emit the fact.
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (idempotency_key,),
+                )
+                previous = connection.execute(
+                    "SELECT response FROM idempotency_record "
+                    "WHERE service=%s AND key=%s",
+                    ("activity-service", idempotency_key),
+                ).fetchone()
+                if previous:
+                    return previous["response"]
             qso_rows = connection.execute(
                 "SELECT q.id,q.activation_id,q.operator_id,q.hunter_id,q.programme_slug,a.entity_id AS activation_entity_id "
                 "FROM activity_qso q JOIN activity_activation a ON a.id=q.activation_id "
@@ -1780,13 +1797,20 @@ class ActivityRepository:
                     "awardRecalculationJobs": jobs,
                 },
             )
-            return {
+            result = {
                 "entityId": entity_id,
                 "deletedBy": deleted_by,
                 "qsoCount": len(ids),
                 "activationCount": len(activation_rows),
                 "awardRecalculationJobs": jobs,
             }
+            if idempotency_key:
+                connection.execute(
+                    "INSERT INTO idempotency_record(service,key,response) "
+                    "VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
+                    ("activity-service", idempotency_key, self._json(result)),
+                )
+            return result
 
     @staticmethod
     def _rebuild_subject_aggregates(
