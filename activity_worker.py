@@ -565,9 +565,7 @@ async def main() -> None:
     for signal_number in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(signal_number, stop_event.set)
     try:
-        tasks = [
-            consume_kind(nc, repo, kind, stop_event) for kind in WORKERS
-        ]
+        tasks = [consume_kind(nc, repo, kind, stop_event) for kind in WORKERS]
         if LEGACY_RECONCILIATION_ENABLED:
             tasks.append(reconcile_legacy_work(repo, stop_event))
         await asyncio.gather(*tasks)
