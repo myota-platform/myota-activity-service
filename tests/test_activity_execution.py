@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 import sys
 from pathlib import Path
 
@@ -166,6 +167,34 @@ class ActivityExecutionTests(unittest.TestCase):
             None, {"entityId": "park-1"}
         )
         self.assertEqual(impact["entityId"], "park-1")
+
+    def test_entity_deletion_cascade_forwards_idempotency_key(self) -> None:
+        class FakeRepository:
+            durable = True
+
+            def __init__(self):
+                self.call = None
+
+            def cascade_delete_entity(self, *args):
+                self.call = args
+                return {"entityId": args[0]}
+
+        repository = FakeRepository()
+        with patch.object(ActivityHandler, "repository", repository):
+            result = ActivityHandler.cascade_delete_entity(
+                None,
+                {
+                    "entityId": "entity-1",
+                    "_body": {"deletedBy": "admin-1"},
+                    "Idempotency-Key": "geodata-delete:job-1",
+                },
+            )
+
+        self.assertEqual(result, {"entityId": "entity-1"})
+        self.assertEqual(
+            repository.call,
+            ("entity-1", "admin-1", "geodata-delete:job-1"),
+        )
 
     def test_http_activity_mutation_requires_owner_or_admin(self) -> None:
         with self.assertRaises(PermissionError):
