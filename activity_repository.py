@@ -27,6 +27,21 @@ WORK_TYPE_BY_KIND = {
     "PDF_RENDER": "activity.pdf-render.v1",
     "STATISTICS_REBUILD": "activity.statistics-rebuild.v1",
 }
+WORK_JOB_STATUSES = ("queued", "running", "succeeded", "failed")
+
+
+def empty_work_metrics() -> dict[str, float]:
+    """Expose zero-valued work series before the first accepted job exists."""
+    result: dict[str, float] = {}
+    for kind in WORK_TYPE_BY_KIND:
+        label = kind.lower()
+        for status in WORK_JOB_STATUSES:
+            result[
+                f'myota_activity_jobs_total{{kind="{label}",status="{status}"}}'
+            ] = 0.0
+        result[f'myota_activity_job_queue_age_seconds{{kind="{label}"}}'] = 0.0
+        result[f'myota_activity_work_retries_total{{kind="{label}"}}'] = 0.0
+    return result
 
 
 class ActivityRepository:
@@ -1269,7 +1284,7 @@ class ActivityRepository:
             imports = connection.execute(
                 "SELECT status, count(*) AS total FROM activity_import GROUP BY status"
             ).fetchall()
-        result: dict[str, float] = {}
+        result = empty_work_metrics()
         for row in rows:
             kind = str(row["kind"]).lower()
             status = str(row["status"]).lower()
