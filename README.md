@@ -8,14 +8,18 @@ statistics. Activity and awards intentionally share one API process and port
 (`8004`). Deployment and migration orchestration live in `myota-deploy`; the
 versioned activity migration in `migrations/` is copied and applied there.
 
-Notification workers share the JetStream pull durable
-`activity-notifications-pull-v1` and can overlap during rolling updates or
-scaling. The database consumer identity remains `activity-notifications` so
-replaying retained events does not duplicate processed notifications. Explicit
-ACKs, bounded pending deliveries and SIGTERM draining protect in-flight work.
-See the [notification rollout runbook](https://github.com/myota-platform/myota-docs/blob/main/docs/operations.md#activity-notification-consumer-rollouts)
-for the transition from the obsolete push consumer. Broker overlap and restart
-regressions run before publishing the service image.
+Activity notification replicas share the registry-owned pull durable
+`activity-notifications-v1`. Its exact filters cover the 19 selected Identity
+facts and two Geodata review/status facts; unrelated events are not consumed as
+no-ops. Activity stores a minimal event ID/type notice and uses the stable
+`event:<eventId>` uniqueness key plus its processed-event table for redelivery
+safety. Delivery uses explicit ACK, bounded retry/backoff, a redacted and
+auditable dead-letter/redrive path, and graceful unsubscribe/drain. Metrics and
+alerts expose processed, duplicate, retry, and dead-letter outcomes. The
+deployment hooks create the successor before rollout and retire only the known
+broad legacy durables after validating it. See the
+[notification consumer runbook](https://github.com/myota-platform/myota-docs/blob/main/docs/operations/messaging/activity-notification-consumer.md)
+and [Phase 3 evidence](https://github.com/myota-platform/myota-docs/blob/main/docs/operations/messaging/evidence/phase3-domain-consumers-2026-10-10.md).
 
 The platform purpose and the distinction between reusable activity capability
 and programme-owned policy are documented in the

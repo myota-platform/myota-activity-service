@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 from typing import Any
 
 from activity_repository import ActivityRepository
-from event_consumer import consume_forever
+from event_consumer import consume_forever, refresh_unresolved_dead_letters
+from prometheus_client import start_http_server
 
 
 def recipient_and_kind(event: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -34,7 +36,18 @@ def recipient_and_kind(event: dict[str, Any]) -> tuple[str | None, str | None]:
     return None, None
 
 
+def notice_payload(event: dict[str, Any]) -> dict[str, Any]:
+    """Store only the event identity and type needed to render a notice."""
+    return {
+        "eventType": event.get("eventType"),
+        "eventId": event.get("eventId"),
+    }
+
+
 async def main() -> None:
+    start_http_server(
+        int(os.environ.get("ACTIVITY_NOTIFICATION_METRICS_PORT", "9110"))
+    )
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signal_number in (signal.SIGINT, signal.SIGTERM):
@@ -44,19 +57,17 @@ async def main() -> None:
         raise RuntimeError(
             "ACTIVITY_DATABASE_URL is required for the notification consumer"
         )
+    refresh_unresolved_dead_letters(repo.dsn)
 
-    async def handle(event: dict[str, Any]) -> None:
+    async def handle(event: dict[str, Any], connection) -> None:
         recipient, kind = recipient_and_kind(event)
         if recipient and kind:
             repo.create_notification(
                 str(recipient),
                 kind,
-                {
-                    "eventType": event.get("eventType"),
-                    "eventId": event.get("eventId"),
-                    "payload": event.get("payload"),
-                },
+                notice_payload(event),
                 f"event:{event.get('eventId')}",
+                connection=connection,
             )
 
     await consume_forever(
@@ -64,6 +75,19 @@ async def main() -> None:
         "myota.events.>",
         repo.dsn,
         handle,
+        durable=os.environ.get(
+            "ACTIVITY_NOTIFICATION_DURABLE", "activity-notifications-v1"
+        ),
+        start_sequence=(
+            int(os.environ["ACTIVITY_NOTIFICATION_START_SEQUENCE"])
+            if os.environ.get("ACTIVITY_NOTIFICATION_START_SEQUENCE")
+            else None
+        ),
+        max_messages=(
+            int(os.environ["ACTIVITY_NOTIFICATION_MAX_MESSAGES"])
+            if os.environ.get("ACTIVITY_NOTIFICATION_MAX_MESSAGES")
+            else None
+        ),
         stop_event=stop_event,
     )
 

@@ -8,6 +8,7 @@ run without PostgreSQL.
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 import os
 import time
 from contextlib import contextmanager
@@ -1261,8 +1262,14 @@ class ActivityRepository:
         notification_type: str,
         payload: dict[str, Any],
         deduplication_key: str | None = None,
+        connection: Any | None = None,
     ) -> dict[str, Any]:
-        with self.transaction() as connection:
+        transaction = (
+            self.transaction()
+            if connection is None
+            else nullcontext(connection)
+        )
+        with transaction as connection:
             notification_id = new_id()
             row = connection.execute(
                 "INSERT INTO activity_notification(id,recipient_id,notification_type,payload,deduplication_key) VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING *",
