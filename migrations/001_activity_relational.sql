@@ -252,7 +252,6 @@ CREATE TABLE IF NOT EXISTS activity_job (
   completed_at timestamptz,
   last_error text
 );
-CREATE INDEX IF NOT EXISTS activity_job_claim_idx ON activity_job (status, available_at, id);
 
 CREATE TABLE IF NOT EXISTS activity_statistic_snapshot (
   id uuid PRIMARY KEY,

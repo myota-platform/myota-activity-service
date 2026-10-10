@@ -19,6 +19,16 @@ from activity_domain import iso_timestamp, parse_timestamp
 from common import new_id, now, require_durable_database
 
 
+WORK_TYPE_BY_KIND = {
+    "QSO_INGESTION": "activity.qso-ingestion.v1",
+    "ADIF_IMPORT": "activity.adif-import.v1",
+    "AWARD_RECALCULATE": "activity.award-recalculate.v1",
+    "AWARD_EVALUATION": "activity.award-evaluation.v1",
+    "PDF_RENDER": "activity.pdf-render.v1",
+    "STATISTICS_REBUILD": "activity.statistics-rebuild.v1",
+}
+
+
 class ActivityRepository:
     def __init__(self, dsn_env: str = "ACTIVITY_DATABASE_URL") -> None:
         self.dsn = os.environ.get(dsn_env, "")
@@ -184,7 +194,23 @@ class ActivityRepository:
             "ON CONFLICT (idempotency_key) DO UPDATE SET id=activity_job.id RETURNING id",
             (job_id, kind, self._json(payload), idempotency_key),
         ).fetchone()
-        return self._iso(row["id"] if isinstance(row, dict) else row[0])
+        actual_id = self._iso(row["id"] if isinstance(row, dict) else row[0])
+        work_type = WORK_TYPE_BY_KIND.get(kind)
+        if work_type:
+            # The job row and its small ID-only command commit atomically.
+            # Using the job UUID as the outbox ID makes relay retries stable.
+            connection.execute(
+                "INSERT INTO outbox_event(event_id,event_type,producer,aggregate_type,aggregate_id,payload,occurred_at,available_at) "
+                "VALUES (%s,%s,'activity-service','activity_job',%s,%s,now(),now()) "
+                "ON CONFLICT (event_id) DO NOTHING",
+                (
+                    actual_id,
+                    work_type,
+                    actual_id,
+                    self._json({"jobId": actual_id}),
+                ),
+            )
+        return actual_id
 
     def _upsert_subject(
         self,
@@ -940,10 +966,39 @@ class ActivityRepository:
                 (import_id,),
             )
 
-    def claim_job(self) -> dict[str, Any] | None:
+    def reconcile_queued_work_outbox(self) -> int:
+        """Repair only legacy queued rows missing their transactional command."""
+        with self.transaction() as connection:
+            jobs = connection.execute(
+                "SELECT id,kind,created_at,available_at FROM activity_job WHERE status='QUEUED' AND kind = ANY(%s) ORDER BY available_at,id FOR UPDATE",
+                (list(WORK_TYPE_BY_KIND),),
+            ).fetchall()
+            repaired = 0
+            for job in jobs:
+                inserted = connection.execute(
+                    "INSERT INTO outbox_event(event_id,event_type,producer,aggregate_type,aggregate_id,payload,occurred_at,available_at) "
+                    "VALUES (%s,%s,'activity-service','activity_job',%s,%s,%s,%s) ON CONFLICT (event_id) DO NOTHING RETURNING event_id",
+                    (
+                        self._iso(job["id"]),
+                        WORK_TYPE_BY_KIND[job["kind"]],
+                        self._iso(job["id"]),
+                        self._json({"jobId": self._iso(job["id"])}),
+                        job["created_at"],
+                        job["available_at"],
+                    ),
+                ).fetchone()
+                repaired += int(inserted is not None)
+            return repaired
+
+    def claim_work_job(
+        self, job_id: str, lease_seconds: int = 120
+    ) -> dict[str, Any] | None:
+        """Claim a queued command or take over a job whose worker lease expired."""
+        lease_token = new_id()
         with self.transaction() as connection:
             row = connection.execute(
-                "WITH next_job AS (SELECT id FROM activity_job WHERE status='QUEUED' AND available_at <= now() ORDER BY available_at,id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE activity_job j SET status='RUNNING',attempts=j.attempts+1,started_at=now() FROM next_job n WHERE j.id=n.id RETURNING j.*"
+                "UPDATE activity_job SET status='RUNNING',attempts=attempts+1,started_at=COALESCE(started_at,now()),lease_expires_at=now()+make_interval(secs => %s),lease_token=%s WHERE id=%s AND kind = ANY(%s) AND available_at <= now() AND (status='QUEUED' OR (status='RUNNING' AND lease_expires_at < now())) RETURNING id,kind,payload,attempts,lease_token",
+                (lease_seconds, lease_token, job_id, list(WORK_TYPE_BY_KIND)),
             ).fetchone()
             if not row:
                 return None
@@ -952,30 +1007,152 @@ class ActivityRepository:
                 "kind": row["kind"],
                 "payload": row["payload"],
                 "attempts": row["attempts"],
+                "leaseToken": str(row["lease_token"]),
             }
 
-    def complete_job(self, job_id: str) -> None:
+    def heartbeat_work_job(
+        self, job_id: str, lease_token: str, lease_seconds: int = 120
+    ) -> bool:
         with self.transaction() as connection:
+            row = connection.execute(
+                "UPDATE activity_job SET lease_expires_at=now()+make_interval(secs => %s) WHERE id=%s AND status='RUNNING' AND lease_token=%s RETURNING id",
+                (lease_seconds, job_id, lease_token),
+            ).fetchone()
+            return row is not None
+
+    def retry_work_job(
+        self,
+        job_id: str,
+        lease_token: str,
+        error: Exception,
+        delay_seconds: int,
+    ) -> None:
+        safe_error = type(error).__name__[:80]
+        with self.transaction() as connection:
+            row = connection.execute(
+                "UPDATE activity_job SET status='QUEUED',available_at=now()+make_interval(secs => %s),lease_expires_at=NULL,lease_token=NULL,last_error=%s WHERE id=%s AND status='RUNNING' AND lease_token=%s RETURNING id",
+                (
+                    delay_seconds,
+                    safe_error or "worker error",
+                    job_id,
+                    lease_token,
+                ),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("Activity work lease was lost before retry")
+
+    def complete_job(self, job_id: str, lease_token: str) -> None:
+        with self.transaction() as connection:
+            row = connection.execute(
+                "UPDATE activity_job SET status='SUCCEEDED',completed_at=now(),lease_expires_at=NULL,lease_token=NULL,last_error=NULL WHERE id=%s AND status='RUNNING' AND lease_token=%s RETURNING id",
+                (job_id, lease_token),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError(
+                    "Activity work lease was lost before completion"
+                )
+
+    def fail_work_job(
+        self,
+        job_id: str,
+        lease_token: str,
+        error: Exception,
+        subject: str,
+        work_type: str,
+        delivery_count: int,
+    ) -> None:
+        safe_error = type(error).__name__[:80]
+        with self.transaction() as connection:
+            row = connection.execute(
+                "UPDATE activity_job SET status='FAILED',completed_at=now(),lease_expires_at=NULL,lease_token=NULL,last_error=%s WHERE id=%s AND status='RUNNING' AND lease_token=%s RETURNING id",
+                (safe_error or "worker error", job_id, lease_token),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError(
+                    "Activity work lease was lost before failure"
+                )
             connection.execute(
-                "UPDATE activity_job SET status='SUCCEEDED',completed_at=now(),last_error=NULL WHERE id=%s",
-                (job_id,),
+                "INSERT INTO activity_work_dead_letter(id,work_id,work_type,subject,delivery_count,error_category) VALUES (%s,%s,%s,%s,%s,%s)",
+                (
+                    new_id(),
+                    job_id,
+                    work_type,
+                    subject[:255],
+                    max(1, delivery_count),
+                    safe_error or "worker error",
+                ),
             )
 
-    def fail_job(self, job: dict[str, Any], error: Exception) -> None:
+    def record_work_dead_letter(
+        self,
+        subject: str,
+        work_id: str | None,
+        work_type: str | None,
+        delivery_count: int,
+        error_category: str,
+    ) -> None:
         with self.transaction() as connection:
-            if int(job["attempts"]) >= int(
-                os.environ.get("MYOTA_ACTIVITY_JOB_MAX_ATTEMPTS", "8")
-            ):
-                connection.execute(
-                    "UPDATE activity_job SET status='FAILED',completed_at=now(),last_error=%s WHERE id=%s",
-                    (str(error), job["id"]),
+            connection.execute(
+                "INSERT INTO activity_work_dead_letter(id,work_id,work_type,subject,delivery_count,error_category) VALUES (%s,%s,%s,%s,%s,%s)",
+                (
+                    new_id(),
+                    work_id,
+                    work_type,
+                    subject[:255],
+                    max(1, delivery_count),
+                    error_category[:80],
+                ),
+            )
+
+    def redrive_failed_work_job(
+        self, job_id: str, actor: str, reason: str
+    ) -> str:
+        actor = actor.strip()
+        reason = reason.strip()
+        if not actor or len(actor) > 120 or not reason or len(reason) > 500:
+            raise ValueError(
+                "actor/reason must be present and within the audit limits"
+            )
+        outbox_event_id = new_id()
+        with self.transaction() as connection:
+            job = connection.execute(
+                "SELECT id,kind,status FROM activity_job WHERE id=%s FOR UPDATE",
+                (job_id,),
+            ).fetchone()
+            if not job:
+                raise KeyError(job_id)
+            if job["status"] not in {"FAILED", "QUEUED"}:
+                raise ValueError(
+                    "only failed or recoverable queued work may be redriven"
                 )
-            else:
-                delay = min(300, 2 ** min(int(job["attempts"]), 8))
-                connection.execute(
-                    "UPDATE activity_job SET status='QUEUED',available_at=now()+make_interval(secs => %s),last_error=%s WHERE id=%s",
-                    (delay, str(error), job["id"]),
+            work_type = WORK_TYPE_BY_KIND.get(job["kind"])
+            if not work_type:
+                raise ValueError(
+                    "job kind is not registered for JetStream work"
                 )
+            if job["status"] == "FAILED":
+                connection.execute(
+                    "UPDATE activity_job SET status='QUEUED',available_at=now(),started_at=NULL,completed_at=NULL,lease_expires_at=NULL,lease_token=NULL,last_error=NULL WHERE id=%s",
+                    (job_id,),
+                )
+            connection.execute(
+                "INSERT INTO outbox_event(event_id,event_type,producer,aggregate_type,aggregate_id,payload,occurred_at,available_at) VALUES (%s,%s,'activity-service','activity_job',%s,%s,now(),now())",
+                (
+                    outbox_event_id,
+                    work_type,
+                    job_id,
+                    self._json({"jobId": job_id}),
+                ),
+            )
+            connection.execute(
+                "INSERT INTO activity_work_redrive_audit(id,job_id,outbox_event_id,actor,reason) VALUES (%s,%s,%s,%s,%s)",
+                (new_id(), job_id, outbox_event_id, actor, reason),
+            )
+            connection.execute(
+                "UPDATE activity_work_dead_letter SET resolved_at=now() WHERE work_id=%s AND resolved_at IS NULL",
+                (job_id,),
+            )
+        return outbox_event_id
 
     def save_progress(
         self,
@@ -1011,7 +1188,9 @@ class ActivityRepository:
         """Return durable worker state for a resource/job status endpoint."""
         with self.transaction() as connection:
             row = connection.execute(
-                "SELECT id,kind,payload,status,attempts,available_at,started_at,completed_at,last_error "
+                "SELECT id,kind,payload,status,attempts,available_at,started_at,completed_at,last_error, "
+                "GREATEST(0,EXTRACT(EPOCH FROM (available_at-now()))) AS retry_after_seconds, "
+                "GREATEST(0,EXTRACT(EPOCH FROM (lease_expires_at-now()))) AS lease_remaining_seconds "
                 "FROM activity_job WHERE id=%s",
                 (job_id,),
             ).fetchone()
@@ -1027,17 +1206,32 @@ class ActivityRepository:
                 "startedAt": self._iso(row.get("started_at")),
                 "completedAt": self._iso(row.get("completed_at")),
                 "lastError": row.get("last_error"),
+                "createdAt": self._iso(row.get("created_at")),
+                "retryAfterSeconds": float(
+                    row.get("retry_after_seconds") or 0
+                ),
+                "leaseRemainingSeconds": float(
+                    row.get("lease_remaining_seconds") or 0
+                ),
             }
 
     def metrics(self) -> dict[str, float]:
         """Return bounded gauges for the operational dashboard."""
         with self.transaction() as connection:
             rows = connection.execute(
-                "SELECT status, count(*) AS total FROM activity_job GROUP BY status"
+                "SELECT kind,status,count(*) AS total FROM activity_job GROUP BY kind,status"
             ).fetchall()
-            lag = connection.execute(
-                "SELECT COALESCE(EXTRACT(EPOCH FROM (now() - min(available_at))), 0) "
-                "FROM activity_job WHERE status='QUEUED' AND available_at <= now()"
+            queue_age = connection.execute(
+                "SELECT kind,COALESCE(EXTRACT(EPOCH FROM (now()-min(available_at))),0) AS age FROM activity_job WHERE status='QUEUED' AND available_at<=now() GROUP BY kind"
+            ).fetchall()
+            latency = connection.execute(
+                "SELECT kind,COALESCE(avg(EXTRACT(EPOCH FROM (completed_at-created_at))),0) AS seconds FROM activity_job WHERE status='SUCCEEDED' AND completed_at IS NOT NULL GROUP BY kind"
+            ).fetchall()
+            retries = connection.execute(
+                "SELECT kind,COALESCE(sum(GREATEST(attempts-1,0)),0) AS total FROM activity_job GROUP BY kind"
+            ).fetchall()
+            dead_letters = connection.execute(
+                "SELECT count(*) FROM activity_work_dead_letter WHERE resolved_at IS NULL"
             ).fetchone()
             corrections = connection.execute(
                 "SELECT count(*) FROM activity_qso_correction WHERE status='PENDING'"
@@ -1075,12 +1269,34 @@ class ActivityRepository:
             imports = connection.execute(
                 "SELECT status, count(*) AS total FROM activity_import GROUP BY status"
             ).fetchall()
-        result = {
-            f"myota_activity_jobs_{str(row['status']).lower()}_total": float(
-                row["total"]
+        result: dict[str, float] = {}
+        for row in rows:
+            kind = str(row["kind"]).lower()
+            status = str(row["status"]).lower()
+            total = float(row["total"])
+            result[f"myota_activity_jobs_{status}_total"] = (
+                result.get(f"myota_activity_jobs_{status}_total", 0.0) + total
             )
-            for row in rows
-        }
+            result[
+                f'myota_activity_jobs_total{{kind="{kind}",status="{status}"}}'
+            ] = total
+        for row in queue_age:
+            result[
+                f'myota_activity_job_queue_age_seconds{{kind="{str(row["kind"]).lower()}"}}'
+            ] = float(row["age"] or 0)
+        for row in latency:
+            result[
+                f'myota_activity_job_latency_seconds_avg{{kind="{str(row["kind"]).lower()}"}}'
+            ] = float(row["seconds"] or 0)
+        for row in retries:
+            result[
+                f'myota_activity_work_retries_total{{kind="{str(row["kind"]).lower()}"}}'
+            ] = float(row["total"] or 0)
+        result["myota_activity_work_dead_letters_unresolved"] = float(
+            dead_letters[0]
+            if not isinstance(dead_letters, dict)
+            else next(iter(dead_letters.values()))
+        )
         result.update(
             {
                 f'myota_activity_activations_by_status_total{{status="{str(row["status"])}"}}': float(
@@ -1089,9 +1305,8 @@ class ActivityRepository:
                 for row in activations
             }
         )
-        result["myota_activity_job_lag_seconds"] = float(
-            (lag[0] if not isinstance(lag, dict) else next(iter(lag.values())))
-            or 0
+        result["myota_activity_job_lag_seconds"] = max(
+            (float(row["age"] or 0) for row in queue_age), default=0.0
         )
         result["myota_activity_qso_corrections_pending"] = float(
             (
@@ -1272,7 +1487,7 @@ class ActivityRepository:
         with transaction as connection:
             notification_id = new_id()
             row = connection.execute(
-                "INSERT INTO activity_notification(id,recipient_id,notification_type,payload,deduplication_key) VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING *",
+                "INSERT INTO activity_notification(id,recipient_id,notification_type,payload,status,delivered_at,deduplication_key) VALUES (%s,%s,%s,%s,'DELIVERED',now(),%s) ON CONFLICT DO NOTHING RETURNING *",
                 (
                     notification_id,
                     recipient_id,
@@ -1289,13 +1504,6 @@ class ActivityRepository:
             if row is None:
                 raise RuntimeError("notification insert did not return a row")
             actual_id = self._iso(row["id"])
-            if actual_id == notification_id:
-                self._job(
-                    connection,
-                    "NOTIFICATION_SEND",
-                    {"notificationId": actual_id},
-                    f"notification:{actual_id}",
-                )
             return {
                 "id": actual_id,
                 "recipientId": row["recipient_id"],

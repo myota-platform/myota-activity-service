@@ -3,14 +3,66 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import os
+import signal
 import sys
 from typing import Any
+from uuid import UUID
+
+from nats.aio.client import Client as NATS
+from nats.js.api import AckPolicy
 
 from activity_domain import normalize_qso, parse_adif, qso_deduplication_key
 from activity_repository import ActivityRepository
 from awards import AwardsHandler, evaluate_condition
 from storage import ObjectStore
+
+
+LOG = logging.getLogger("myota.activity.work")
+WORKERS = {
+    "QSO_INGESTION": (
+        "myota.work.activity.qso-ingestion.v1",
+        "activity-qso-ingestion-v1",
+    ),
+    "ADIF_IMPORT": (
+        "myota.work.activity.adif-import.v1",
+        "activity-adif-import-v1",
+    ),
+    "AWARD_RECALCULATE": (
+        "myota.work.activity.award-recalculate.v1",
+        "activity-award-recalculate-v1",
+    ),
+    "AWARD_EVALUATION": (
+        "myota.work.activity.award-evaluation.v1",
+        "activity-award-evaluation-v1",
+    ),
+    "PDF_RENDER": (
+        "myota.work.activity.pdf-render.v1",
+        "activity-pdf-render-v1",
+    ),
+    "STATISTICS_REBUILD": (
+        "myota.work.activity.statistics-rebuild.v1",
+        "activity-statistics-rebuild-v1",
+    ),
+}
+# Keep these values aligned with the deploy-owned topology in
+# myota-deploy/services/jetstream_topology.py. Pull delivery must bind to the
+# pre-created durable; it must never auto-create a weaker default consumer.
+CONSUMER_LIMITS = {
+    "QSO_INGESTION": (120, 4, 4),
+    "ADIF_IMPORT": (300, 1, 1),
+    "AWARD_RECALCULATE": (120, 2, 2),
+    "AWARD_EVALUATION": (120, 2, 2),
+    "PDF_RENDER": (300, 1, 1),
+    "STATISTICS_REBUILD": (300, 1, 1),
+}
+MAX_DELIVERIES = 8
+LEASE_SECONDS = 120
+LEGACY_RECONCILIATION_ENABLED = os.environ.get(
+    "ACTIVITY_LEGACY_RECONCILIATION_ENABLED", "0"
+).lower() in {"1", "true", "yes"}
 
 
 def process_adif(repo: ActivityRepository, payload: dict[str, Any]) -> None:
@@ -246,16 +298,6 @@ def process_award_evaluation(
         )
 
 
-def process_notification(
-    repo: ActivityRepository, payload: dict[str, Any]
-) -> None:
-    with repo.transaction() as connection:
-        connection.execute(
-            "UPDATE activity_notification SET status='DELIVERED',delivered_at=now() WHERE id=%s AND status='QUEUED'",
-            (payload["notificationId"],),
-        )
-
-
 def process(repo: ActivityRepository, job: dict[str, Any]) -> None:
     AwardsHandler.repository = repo
     handlers = {
@@ -265,7 +307,6 @@ def process(repo: ActivityRepository, job: dict[str, Any]) -> None:
         "AWARD_EVALUATION": process_award_evaluation,
         "PDF_RENDER": process_pdf,
         "STATISTICS_REBUILD": process_statistics,
-        "NOTIFICATION_SEND": process_notification,
     }
     handler = handlers.get(job["kind"])
     if not handler:
@@ -273,26 +314,265 @@ def process(repo: ActivityRepository, job: dict[str, Any]) -> None:
     handler(repo, job["payload"])
 
 
+async def handle_message(
+    repo: ActivityRepository, kind: str, message: Any
+) -> None:
+    subject, _durable = WORKERS[kind]
+    delivery = int(getattr(message.metadata, "num_delivered", 1))
+    lease_token: str | None = None
+    try:
+        envelope = json.loads(message.data)
+        work_id = str(envelope["workId"])
+        work_type = envelope["workType"]
+        payload = envelope["payload"]
+        required = {
+            "envelopeVersion",
+            "workId",
+            "workType",
+            "createdAt",
+            "producer",
+            "aggregate",
+            "payload",
+        }
+        allowed = required | {"correlationId", "causationId"}
+        if (
+            envelope.get("envelopeVersion") != 1
+            or work_type != subject.removeprefix("myota.work.")
+            or not required.issubset(envelope)
+            or not set(envelope).issubset(allowed)
+            or envelope.get("producer") != "activity-service"
+            or not str(envelope.get("createdAt", "")).endswith("Z")
+            or str(UUID(work_id)) != work_id
+            or not isinstance(payload, dict)
+            or set(payload) != {"jobId"}
+            or payload.get("jobId") != work_id
+            or envelope.get("aggregate")
+            != {"type": "activity_job", "id": work_id}
+            or message.subject != subject
+        ):
+            raise ValueError("work contract mismatch")
+    except Exception:
+        await asyncio.to_thread(
+            repo.record_work_dead_letter,
+            str(getattr(message, "subject", "unknown")),
+            None,
+            None,
+            delivery,
+            "invalid_envelope",
+        )
+        await message.term()
+        return
+
+    try:
+        claimed = await asyncio.to_thread(
+            repo.claim_work_job, work_id, LEASE_SECONDS
+        )
+        while claimed is None:
+            try:
+                current = await asyncio.to_thread(repo.get_job, work_id)
+            except KeyError:
+                await asyncio.to_thread(
+                    repo.record_work_dead_letter,
+                    message.subject,
+                    work_id,
+                    work_type,
+                    delivery,
+                    "job_row_missing",
+                )
+                await message.term()
+                return
+            if current["kind"] != kind:
+                await asyncio.to_thread(
+                    repo.record_work_dead_letter,
+                    message.subject,
+                    work_id,
+                    work_type,
+                    delivery,
+                    "job_kind_mismatch",
+                )
+                await message.term()
+                return
+            if current["status"] in {"SUCCEEDED", "FAILED"}:
+                await message.ack()
+                return
+            wait_seconds = (
+                current.get("retryAfterSeconds", 0)
+                if current["status"] == "QUEUED"
+                else current.get("leaseRemainingSeconds", 0)
+            )
+            try:
+                await message.in_progress()
+            except Exception:
+                LOG.warning(
+                    "could not extend ACK while waiting for Activity job lease",
+                    extra={"kind": kind},
+                )
+            await asyncio.sleep(min(max(float(wait_seconds), 0.25), 30))
+            claimed = await asyncio.to_thread(
+                repo.claim_work_job, work_id, LEASE_SECONDS
+            )
+
+        task = asyncio.create_task(asyncio.to_thread(process, repo, claimed))
+        lease_token = claimed["leaseToken"]
+        while not task.done():
+            done, _pending = await asyncio.wait({task}, timeout=30)
+            if done:
+                break
+            await asyncio.to_thread(
+                repo.heartbeat_work_job,
+                work_id,
+                lease_token,
+                LEASE_SECONDS,
+            )
+            try:
+                await message.in_progress()
+            except Exception:
+                # The job lease still prevents a second consumer from running
+                # the handler while JetStream attempts redelivery.
+                LOG.warning("work progress ACK failed", extra={"kind": kind})
+        await task
+        await asyncio.to_thread(repo.complete_job, work_id, lease_token)
+        await message.ack()
+    except Exception as exc:
+        delay = min(300, 2 ** min(max(1, delivery), 8))
+        try:
+            if lease_token is None:
+                await message.nak(delay=delay)
+                return
+            if delivery >= MAX_DELIVERIES:
+                await asyncio.to_thread(
+                    repo.fail_work_job,
+                    work_id,
+                    lease_token,
+                    exc,
+                    message.subject,
+                    work_type,
+                    delivery,
+                )
+                await message.ack()
+            else:
+                await asyncio.to_thread(
+                    repo.retry_work_job,
+                    work_id,
+                    lease_token,
+                    exc,
+                    delay,
+                )
+                await message.nak(delay=delay)
+        except Exception:
+            # Leave the message unacknowledged if durable failure/retry state
+            # could not be persisted; JetStream will redeliver it.
+            LOG.exception(
+                "could not persist work retry state", extra={"kind": kind}
+            )
+
+
+async def consume_kind(
+    nc: NATS, repo: ActivityRepository, kind: str, stop_event: asyncio.Event
+) -> None:
+    subject, durable = WORKERS[kind]
+    js = nc.jetstream()
+    info = await js.consumer_info("MYOTA_ACTIVITY_WORK", durable)
+    config = info.config
+    ack_wait, max_ack_pending, max_waiting = CONSUMER_LIMITS[kind]
+    validate_consumer_config(
+        config,
+        kind,
+        subject,
+        durable,
+        ack_wait,
+        max_ack_pending,
+        max_waiting,
+    )
+    subscription = await js.pull_subscribe_bind(
+        stream="MYOTA_ACTIVITY_WORK", durable=durable
+    )
+    try:
+        while not stop_event.is_set():
+            try:
+                messages = await subscription.fetch(1, timeout=2)
+            except Exception as exc:
+                if "timeout" in str(exc).lower():
+                    continue
+                raise
+            for message in messages:
+                await handle_message(repo, kind, message)
+    finally:
+        await subscription.unsubscribe()
+
+
+def validate_consumer_config(
+    config: Any,
+    kind: str,
+    subject: str,
+    durable: str,
+    ack_wait: int,
+    max_ack_pending: int,
+    max_waiting: int,
+) -> None:
+    if (
+        config.filter_subject != subject
+        or config.ack_policy != AckPolicy.EXPLICIT
+        or config.ack_wait != ack_wait
+        or config.max_deliver != MAX_DELIVERIES
+        or config.max_ack_pending != max_ack_pending
+        or config.max_waiting != max_waiting
+        or config.deliver_subject
+    ):
+        raise RuntimeError(
+            f"Activity work durable {durable} does not match its registered pull policy ({kind})"
+        )
+
+
+async def reconcile_legacy_work(
+    repo: ActivityRepository, stop_event: asyncio.Event
+) -> None:
+    """Translate only queued rows lacking an outbox command during rollout."""
+    while not stop_event.is_set():
+        try:
+            repaired = await asyncio.to_thread(
+                repo.reconcile_queued_work_outbox
+            )
+            if repaired:
+                LOG.warning(
+                    "repaired queued Activity work outbox rows",
+                    extra={"count": repaired},
+                )
+        except Exception as exc:
+            LOG.error(
+                "Activity work outbox reconciliation failed",
+                extra={"failure_class": type(exc).__name__},
+            )
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=30)
+        except TimeoutError:
+            pass
+
+
 async def main() -> None:
+    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
     repo = ActivityRepository("ACTIVITY_DATABASE_URL")
     if not repo.durable:
         raise RuntimeError(
             "ACTIVITY_DATABASE_URL is required for the activity worker"
         )
-    while True:
-        job = await asyncio.to_thread(repo.claim_job)
-        if not job:
-            await asyncio.sleep(
-                float(
-                    os.environ.get("MYOTA_ACTIVITY_WORKER_POLL_SECONDS", "1")
-                )
-            )
-            continue
-        try:
-            await asyncio.to_thread(process, repo, job)
-            await asyncio.to_thread(repo.complete_job, job["id"])
-        except Exception as exc:
-            await asyncio.to_thread(repo.fail_job, job, exc)
+    if LEGACY_RECONCILIATION_ENABLED:
+        await asyncio.to_thread(repo.reconcile_queued_work_outbox)
+    nc = NATS()
+    await nc.connect(os.environ.get("NATS_URL", "nats://myota-nats:4222"))
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for signal_number in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(signal_number, stop_event.set)
+    try:
+        tasks = [
+            consume_kind(nc, repo, kind, stop_event) for kind in WORKERS
+        ]
+        if LEGACY_RECONCILIATION_ENABLED:
+            tasks.append(reconcile_legacy_work(repo, stop_event))
+        await asyncio.gather(*tasks)
+    finally:
+        await nc.drain()
 
 
 if __name__ == "__main__":
