@@ -34,6 +34,9 @@ in the [charter gap analysis](https://github.com/myota-platform/myota-docs/blob/
 - The activity migration creates local state, idempotency, outbox,
   consumer-checkpoint and dead-letter tables inside `myota_activity`; these
   infrastructure tables are not read from `myota_core`.
+- Migration `005_outbox_dead_letter_redrive.sql` adds durable resolution state
+  and an operator-audited redrive history. Redrive preserves the original
+  dead-letter record and republishes from the retained Activity outbox row.
 - Activation validity windows, location/rule checks, verified callsign inputs,
   normalization, band/mode validation, correction workflows and close-time
   programme rule evaluation.
