@@ -775,7 +775,7 @@ class ActivityHandler(JsonHandler):
         )
         if ActivityHandler.repository.durable:
             return ActivityHandler.repository.cascade_delete_entity(
-                p["entityId"], deleted_by
+                p["entityId"], deleted_by, p.get("Idempotency-Key")
             )
         qso_count = 0
         activation_count = 0
