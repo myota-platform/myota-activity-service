@@ -16,7 +16,12 @@ from datetime import datetime, timedelta
 from typing import Any, Iterator
 
 from activity_domain import iso_timestamp, parse_timestamp
-from common import current_correlation_id, new_id, now, require_durable_database
+from common import (
+    current_correlation_id,
+    new_id,
+    now,
+    require_durable_database,
+)
 
 
 WORK_TYPE_BY_KIND = {
