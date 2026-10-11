@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from typing import Any, Iterator
 
 from activity_domain import iso_timestamp, parse_timestamp
-from common import new_id, now, require_durable_database
+from common import current_correlation_id, new_id, now, require_durable_database
 
 
 WORK_TYPE_BY_KIND = {
@@ -183,8 +183,8 @@ class ActivityRepository:
         payload: dict[str, Any],
     ) -> None:
         connection.execute(
-            "INSERT INTO outbox_event(event_id,event_type,producer,aggregate_type,aggregate_id,payload,occurred_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            "INSERT INTO outbox_event(event_id,event_type,producer,aggregate_type,aggregate_id,payload,occurred_at,correlation_id) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
             (
                 new_id(),
                 event_type,
@@ -193,6 +193,7 @@ class ActivityRepository:
                 str(aggregate_id),
                 self._json(payload),
                 self._dt(now()),
+                current_correlation_id(),
             ),
         )
 
@@ -215,14 +216,15 @@ class ActivityRepository:
             # The job row and its small ID-only command commit atomically.
             # Using the job UUID as the outbox ID makes relay retries stable.
             connection.execute(
-                "INSERT INTO outbox_event(event_id,event_type,producer,aggregate_type,aggregate_id,payload,occurred_at,available_at) "
-                "VALUES (%s,%s,'activity-service','activity_job',%s,%s,now(),now()) "
+                "INSERT INTO outbox_event(event_id,event_type,producer,aggregate_type,aggregate_id,payload,occurred_at,available_at,correlation_id) "
+                "VALUES (%s,%s,'activity-service','activity_job',%s,%s,now(),now(),%s) "
                 "ON CONFLICT (event_id) DO NOTHING",
                 (
                     actual_id,
                     work_type,
                     actual_id,
                     self._json({"jobId": actual_id}),
+                    current_correlation_id(),
                 ),
             )
         return actual_id
