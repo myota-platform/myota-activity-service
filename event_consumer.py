@@ -18,6 +18,7 @@ from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy, ReplayPolicy
 from nats.js.errors import FetchTimeoutError
 from prometheus_client import Counter, Gauge
+from myota_logging import log_event, messaging_span
 
 LOG = logging.getLogger(__name__)
 
@@ -202,6 +203,16 @@ async def consume_forever(
                         "myota.events."
                     ):
                         raise ValueError("subject_event_type_mismatch")
+                    correlation_id = event.get("correlationId") or getattr(
+                        message, "headers", {}
+                    ).get("Myota-Correlation-Id")
+                    log_event(
+                        LOG, logging.INFO, "job.received",
+                        component="activity-notifications",
+                        job_type="domain-notification", event_id=event_id,
+                        event_type=event_type, correlation_id=correlation_id,
+                        attempt=delivered,
+                    )
                     version = (
                         int(event_type.rsplit(".v", 1)[-1])
                         if ".v" in event_type
@@ -222,7 +233,17 @@ async def consume_forever(
                             OUTCOMES.labels("duplicate").inc()
                             count_completed()
                             continue
-                        await handler(event, connection)
+                        log_event(
+                            LOG, logging.INFO, "job.started",
+                            component="activity-notifications",
+                            job_type="domain-notification", event_id=event_id,
+                            event_type=event_type, correlation_id=correlation_id,
+                            attempt=delivered,
+                        )
+                        with messaging_span(
+                            "myota-activity", message
+                        ):
+                            await handler(event, connection)
                         connection.execute(
                             "INSERT INTO consumer_processed_event(consumer,event_id) VALUES (%s,%s) ON CONFLICT DO NOTHING",
                             (consumer, event_id),
@@ -236,6 +257,13 @@ async def consume_forever(
                             (event_id,),
                         )
                     refresh_unresolved_dead_letters(database_url)
+                    log_event(
+                        LOG, logging.INFO, "job.completed",
+                        component="activity-notifications",
+                        job_type="domain-notification", event_id=event_id,
+                        event_type=event_type, correlation_id=correlation_id,
+                        attempt=delivered,
+                    )
                     await message.ack()
                     OUTCOMES.labels("processed").inc()
                     count_completed()
@@ -243,12 +271,14 @@ async def consume_forever(
                     permanent = isinstance(exc, ValueError)
                     if not permanent and delivered < MAX_DELIVERIES:
                         delay = min(5 * (3 ** max(delivered - 1, 0)), 300)
-                        LOG.warning(
-                            "Activity notification attempt failed; event_id=%s "
-                            "event_type=%s delivery=%s",
-                            event.get("eventId", "unknown"),
-                            event_type,
-                            delivered,
+                        log_event(
+                            LOG, logging.WARNING, "job.retry",
+                            component="activity-notifications",
+                            job_type="domain-notification",
+                            event_id=event.get("eventId", "unknown"),
+                            event_type=event_type, attempt=delivered,
+                            retry_delay_seconds=delay,
+                            error_type=type(exc).__name__,
                         )
                         await message.nak(delay=delay)
                         OUTCOMES.labels("retry").inc()
@@ -282,12 +312,13 @@ async def consume_forever(
                             ),
                         )
                     refresh_unresolved_dead_letters(database_url)
-                    LOG.error(
-                        "Activity notification dead-lettered; event_id=%s "
-                        "event_type=%s delivery=%s",
-                        diagnostic_id,
-                        event_type,
-                        delivered,
+                    log_event(
+                        LOG, logging.ERROR, "job.failed",
+                        component="activity-notifications",
+                        job_type="domain-notification", event_id=diagnostic_id,
+                        event_type=event_type, attempt=delivered,
+                        error_type=type(exc).__name__,
+                        outcome="dead_lettered",
                     )
                     # The redacted envelope and stream coordinates are now in
                     # the Activity database's reviewed replay workflow.
