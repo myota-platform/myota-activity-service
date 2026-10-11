@@ -23,7 +23,6 @@ from myota_logging import log_http_completed, start_http_span
 
 MAX_BODY_BYTES = int(os.environ.get("MYOTA_MAX_BODY_BYTES", "1048576"))
 
-
 def require_durable_database(dsn_env: str | None, dsn: str) -> None:
     """Fail fast when a configured runtime must not use process memory."""
     required = os.environ.get(
@@ -33,7 +32,6 @@ def require_durable_database(dsn_env: str | None, dsn: str) -> None:
         raise RuntimeError(
             f"{dsn_env} is required when MYOTA_REQUIRE_DURABILITY is enabled"
         )
-
 
 class BoundedThreadingHTTPServer(ThreadingHTTPServer):
     """Thread-per-request server with an explicit concurrency ceiling."""
@@ -57,22 +55,17 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
 
         threading.Thread(target=run, daemon=True).start()
 
-
 def now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
 
 def new_id() -> str:
     return str(uuid.uuid4())
 
-
 def _b64(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
 
-
 def _unb64(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
-
 
 def auth_signing_key() -> bytes:
     value = os.environ.get(
@@ -87,7 +80,6 @@ def auth_signing_key() -> bytes:
         )
     return value.encode("utf-8")
 
-
 def sign_token(claims: dict[str, Any], token_type: str = "access") -> str:
     header = {"alg": "HS256", "typ": "JWT", "tokenType": token_type}
     encoded_header = _b64(json.dumps(header, separators=(",", ":")).encode())
@@ -97,7 +89,6 @@ def sign_token(claims: dict[str, Any], token_type: str = "access") -> str:
         auth_signing_key(), signing_input, hashlib.sha256
     ).digest()
     return f"{encoded_header}.{encoded_claims}.{_b64(signature)}"
-
 
 def verify_token(
     token: str, expected_type: str | None = None
@@ -132,12 +123,10 @@ def verify_token(
     ) as exc:
         raise PermissionError("invalid or expired token") from exc
 
-
 def hash_secret(value: str) -> str:
     salt = secrets.token_bytes(16)
     digest = hashlib.scrypt(value.encode(), salt=salt, n=2**14, r=8, p=1)
     return f"scrypt${_b64(salt)}${_b64(digest)}"
-
 
 def verify_secret(value: str, encoded: str) -> bool:
     try:
@@ -150,7 +139,6 @@ def verify_secret(value: str, encoded: str) -> bool:
         return hmac.compare_digest(actual, _unb64(expected))
     except (ValueError, TypeError):
         return False
-
 
 def page_result(
     items: list[Any], query: dict[str, list[str]] | None = None
@@ -170,7 +158,6 @@ def page_result(
         "total": total,
         "nextPage": page + 1 if start + page_size < total else None,
     }
-
 
 class Store:
     """Compatibility store for small services and in-memory tests.
@@ -341,7 +328,6 @@ class Store:
             self.idempotency[key] = result
             return result
 
-
 def read_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     try:
         length = int(handler.headers.get("Content-Length", "0"))
@@ -359,14 +345,12 @@ def read_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         raise ValueError("JSON body must be an object")
     return value
 
-
 class JsonHandler(BaseHTTPRequestHandler):
     service = "myota-service"
     routes: dict[
         tuple[str, str], Callable[["JsonHandler", dict[str, str]], Any]
     ] = {}
     store = Store()
-    deprecated_routes: set[tuple[str, str]] = set()
 
     @classmethod
     def metrics_extra(cls) -> dict[str, float]:
@@ -430,15 +414,6 @@ class JsonHandler(BaseHTTPRequestHandler):
         request_telemetry = getattr(self, "_otel_request", None)
         if request_telemetry:
             request_telemetry.finish(status, route_name)
-        if route in self.deprecated_routes:
-            METRICS.inc(
-                "myota_legacy_route_requests_total",
-                {
-                    "service": self.service,
-                    "method": route[0],
-                    "route": route[1],
-                },
-            )
         data = (
             b""
             if status == 204
@@ -464,14 +439,6 @@ class JsonHandler(BaseHTTPRequestHandler):
             "Access-Control-Allow-Methods",
             "GET, POST, PUT, PATCH, DELETE, OPTIONS",
         )
-        if getattr(self, "current_route", None) in self.deprecated_routes:
-            self.send_header("Deprecation", "true")
-            self.send_header(
-                "Sunset",
-                os.environ.get(
-                    "MYOTA_LEGACY_ROUTE_SUNSET", "2027-04-01T00:00:00Z"
-                ),
-            )
         self.send_header("API-Version", "v1")
         self.end_headers()
         if data:
@@ -635,7 +602,6 @@ class JsonHandler(BaseHTTPRequestHandler):
                     self._error(500, "internal_error", str(exc))
                 return
         self._error(404, "not_found", f"no route for {path}")
-
 
 def require(body: dict[str, Any], *names: str) -> None:
     missing = [name for name in names if not body.get(name)]
