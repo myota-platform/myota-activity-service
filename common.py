@@ -449,12 +449,12 @@ class JsonHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("X-Request-ID", self.request_id)
         self.send_header("X-Correlation-ID", self.correlation_id)
-            if self._http_span and self._http_span.trace_id:
-                self.send_header("X-Trace-ID", self._http_span.trace_id)
-            self.send_header(
-                "Access-Control-Expose-Headers",
-                "X-Request-ID, X-Correlation-ID, X-Trace-ID",
-            )
+        if self._http_span and self._http_span.trace_id:
+            self.send_header("X-Trace-ID", self._http_span.trace_id)
+        self.send_header(
+            "Access-Control-Expose-Headers",
+            "X-Request-ID, X-Correlation-ID, X-Trace-ID",
+        )
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header(
             "Access-Control-Allow-Headers",
