@@ -53,6 +53,66 @@ class NotificationConsumerTests(unittest.IsolatedAsyncioTestCase):
         message.headers = None
         self.assertIsNone(_header_value(message, "Nats-Msg-Id"))
 
+    async def test_processed_event_logs_request_correlation_from_headers(self):
+        stop = asyncio.Event()
+        message = MagicMock()
+        message.data = json.dumps(
+            {
+                "eventId": "33333333-3333-4333-8333-333333333333",
+                "eventType": "identity.account.created.v1",
+            }
+        ).encode()
+        message.subject = "myota.events.identity.account.created.v1"
+        message.headers = {
+            "Nats-Msg-Id": "notification-test-message",
+            "Myota-Correlation-Id": "request-correlation-test",
+        }
+        message.metadata.num_delivered = 1
+        message.metadata.sequence.stream = 13
+        message.ack = AsyncMock(side_effect=stop.set)
+        sub = MagicMock()
+        sub.fetch = AsyncMock(return_value=[message])
+        sub.unsubscribe = AsyncMock()
+        client = MagicMock()
+        client.connect = AsyncMock()
+        client.drain = AsyncMock()
+        client.jetstream.return_value.pull_subscribe = AsyncMock(
+            return_value=sub
+        )
+        connection = MagicMock()
+        connection.execute.return_value.fetchone.return_value = None
+        handler = AsyncMock()
+
+        with (
+            patch("event_consumer.NATS", return_value=client),
+            patch("event_consumer.psycopg.connect") as connect,
+            patch("event_consumer.refresh_unresolved_dead_letters"),
+            patch("event_consumer.log_event") as log_event,
+        ):
+            connect.return_value.__enter__.return_value = connection
+            await consume_forever(
+                "activity-notifications",
+                "myota.events.>",
+                "unused-dsn",
+                handler,
+                stop_event=stop,
+            )
+
+        handler.assert_awaited_once()
+        message.ack.assert_awaited_once()
+        received = next(
+            call for call in log_event.call_args_list
+            if call.args[2] == "job.received"
+        )
+        self.assertEqual(
+            received.kwargs["messaging_message_id"],
+            "notification-test-message",
+        )
+        self.assertEqual(
+            received.kwargs["correlation_id"],
+            "request-correlation-test",
+        )
+
     async def test_duplicate_event_is_acknowledged_without_notification(self):
         stop = asyncio.Event()
         message = MagicMock()
