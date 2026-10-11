@@ -50,12 +50,9 @@ def bind_correlation_id(value: str | None) -> Iterator[None]:
         _CORRELATION_ID.reset(token)
 
 
-
 def require_durable_database(dsn_env: str | None, dsn: str) -> None:
     """Fail fast when a configured runtime must not use process memory."""
-    required = os.environ.get(
-        "MYOTA_REQUIRE_DURABILITY", ""
-    ).strip().lower() in {
+    required = os.environ.get("MYOTA_REQUIRE_DURABILITY", "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -107,16 +104,12 @@ def _unb64(value: str) -> bytes:
 
 
 def auth_signing_key() -> bytes:
-    value = os.environ.get(
-        "MYOTA_AUTH_SIGNING_KEY", "myota-development-key-change-me"
-    )
+    value = os.environ.get("MYOTA_AUTH_SIGNING_KEY", "myota-development-key-change-me")
     if (
         os.environ.get("MYOTA_ENV", "development").lower() == "production"
         and value == "myota-development-key-change-me"
     ):
-        raise RuntimeError(
-            "MYOTA_AUTH_SIGNING_KEY must be set outside development"
-        )
+        raise RuntimeError("MYOTA_AUTH_SIGNING_KEY must be set outside development")
     return value.encode("utf-8")
 
 
@@ -125,21 +118,15 @@ def sign_token(claims: dict[str, Any], token_type: str = "access") -> str:
     encoded_header = _b64(json.dumps(header, separators=(",", ":")).encode())
     encoded_claims = _b64(json.dumps(claims, separators=(",", ":")).encode())
     signing_input = f"{encoded_header}.{encoded_claims}".encode()
-    signature = hmac.new(
-        auth_signing_key(), signing_input, hashlib.sha256
-    ).digest()
+    signature = hmac.new(auth_signing_key(), signing_input, hashlib.sha256).digest()
     return f"{encoded_header}.{encoded_claims}.{_b64(signature)}"
 
 
-def verify_token(
-    token: str, expected_type: str | None = None
-) -> dict[str, Any]:
+def verify_token(token: str, expected_type: str | None = None) -> dict[str, Any]:
     try:
         encoded_header, encoded_claims, encoded_signature = token.split(".", 2)
         signing_input = f"{encoded_header}.{encoded_claims}".encode()
-        expected = hmac.new(
-            auth_signing_key(), signing_input, hashlib.sha256
-        ).digest()
+        expected = hmac.new(auth_signing_key(), signing_input, hashlib.sha256).digest()
         if not hmac.compare_digest(expected, _unb64(encoded_signature)):
             raise ValueError("invalid token signature")
         header, claims = (
@@ -150,9 +137,7 @@ def verify_token(
             expected_type and header.get("tokenType") != expected_type
         ):
             raise ValueError("invalid token type")
-        if int(claims.get("exp", 0)) <= int(
-            datetime.now(timezone.utc).timestamp()
-        ):
+        if int(claims.get("exp", 0)) <= int(datetime.now(timezone.utc).timestamp()):
             raise ValueError("token expired")
         return claims
     except (
@@ -176,9 +161,7 @@ def verify_secret(value: str, encoded: str) -> bool:
         scheme, salt, expected = encoded.split("$", 2)
         if scheme != "scrypt":
             return False
-        actual = hashlib.scrypt(
-            value.encode(), salt=_unb64(salt), n=2**14, r=8, p=1
-        )
+        actual = hashlib.scrypt(value.encode(), salt=_unb64(salt), n=2**14, r=8, p=1)
         return hmac.compare_digest(actual, _unb64(expected))
     except (ValueError, TypeError):
         return False
@@ -246,9 +229,7 @@ class Store:
         last: Exception | None = None
         for attempt in range(1, 6):
             try:
-                pool_max = max(
-                    1, int(os.environ.get("MYOTA_DB_POOL_MAX", "10"))
-                )
+                pool_max = max(1, int(os.environ.get("MYOTA_DB_POOL_MAX", "10")))
                 self._pool = ConnectionPool(
                     self.dsn,
                     min_size=1,
@@ -260,9 +241,7 @@ class Store:
             except Exception as exc:  # pragma: no cover
                 last = exc
                 time.sleep(min(2 ** (attempt - 1), 8))
-        raise RuntimeError(
-            f"unable to connect to PostgreSQL after retries: {last}"
-        )
+        raise RuntimeError(f"unable to connect to PostgreSQL after retries: {last}")
 
     @contextmanager
     def transaction(self) -> Iterator[Any]:
@@ -395,9 +374,7 @@ def read_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
 class JsonHandler(BaseHTTPRequestHandler):
     service = "myota-service"
-    routes: dict[
-        tuple[str, str], Callable[["JsonHandler", dict[str, str]], Any]
-    ] = {}
+    routes: dict[tuple[str, str], Callable[["JsonHandler", dict[str, str]], Any]] = {}
     store = Store()
 
     @classmethod
@@ -446,9 +423,7 @@ class JsonHandler(BaseHTTPRequestHandler):
         self._log_http_completed(status)
         route = getattr(self, "current_route", None)
         route_name = (
-            route[1]
-            if route
-            else getattr(self, "path", "unknown").split("?", 1)[0]
+            route[1] if route else getattr(self, "path", "unknown").split("?", 1)[0]
         )
         METRICS.inc(
             "myota_http_requests_total",
@@ -513,9 +488,7 @@ class JsonHandler(BaseHTTPRequestHandler):
         if request_telemetry:
             request_telemetry.finish(200, "/metrics")
         self.send_response(200)
-        self.send_header(
-            "Content-Type", "text/plain; version=0.0.4; charset=utf-8"
-        )
+        self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -525,7 +498,7 @@ class JsonHandler(BaseHTTPRequestHandler):
         self._request_started_at = time.perf_counter()
         self.request_id, self.correlation_id = (
             self._request_id(),
-            normalize_correlation_id(self.headers.get("X-Correlation-ID")) or new_id()
+            normalize_correlation_id(self.headers.get("X-Correlation-ID")) or new_id(),
         )
         self._http_span = start_http_span(
             self.service,
@@ -623,21 +596,15 @@ class JsonHandler(BaseHTTPRequestHandler):
                                 **params,
                                 "_body": body,
                                 "_path": self.path,
-                                "Idempotency-Key": self.headers.get(
-                                    "Idempotency-Key"
-                                ),
-                                "Authorization": self.headers.get(
-                                    "Authorization", ""
-                                ),
+                                "Idempotency-Key": self.headers.get("Idempotency-Key"),
+                                "Authorization": self.headers.get("Authorization", ""),
                                 "User-Agent": self.headers.get("User-Agent", ""),
                                 "Remote-Addr": self.client_address[0],
                                 "_http": "1",
                             },
                         )
                     status = (
-                        result.pop("_status", 200)
-                        if isinstance(result, dict)
-                        else 200
+                        result.pop("_status", 200) if isinstance(result, dict) else 200
                     )
                     self.store.persist()
                     self._send(status, result)
