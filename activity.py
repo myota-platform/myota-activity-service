@@ -827,17 +827,8 @@ ActivityHandler.routes = {
         "/v1/activations/{activationId}",
     ): ActivityHandler.update_activation,
     ("POST", "/v1/activations/{activationId}/qsos"): ActivityHandler.add_qso,
-    (
-        "POST",
-        "/v1/activations/{activationId}/qsos/batch",
-    ): ActivityHandler.add_qso_batch,
-    (
-        "POST",
-        "/v1/activations/{activationId}/close",
-    ): ActivityHandler.close_activation,
     ("POST", "/v1/qso-ingestions"): ActivityHandler.create_qso_ingestion,
     ("GET", "/v1/qso-ingestions/{ingestionId}"): ActivityHandler.get_job,
-    ("POST", "/v1/adif/imports"): ActivityHandler.create_adif_import,
     ("GET", "/v1/adif/imports/{importId}"): ActivityHandler.get_adif_import,
     (
         "POST",
@@ -845,16 +836,11 @@ ActivityHandler.routes = {
     ): ActivityHandler.request_correction,
     (
         "POST",
-        "/v1/qso-corrections/{correctionId}/review",
-    ): ActivityHandler.review_correction,
-    (
-        "POST",
         "/v1/qsos/{qsoId}/corrections/{correctionId}/review",
     ): ActivityHandler.review_correction_resource,
     ("GET", "/v1/public/activations"): ActivityHandler.public_history,
     ("GET", "/v1/public/leaderboards"): ActivityHandler.leaderboard,
     ("GET", "/v1/public/results"): ActivityHandler.public_results,
-    ("POST", "/v1/statistics/rebuild"): ActivityHandler.rebuild_statistics,
     (
         "POST",
         "/v1/statistics/rebuild-jobs",
@@ -873,13 +859,7 @@ ActivityHandler.routes = {
     **AwardsHandler.routes,
 }
 
-ActivityHandler.deprecated_routes = {
-    ("POST", "/v1/activations/{activationId}/close"),
-    ("POST", "/v1/activations/{activationId}/qsos/batch"),
-    ("POST", "/v1/adif/imports"),
-    ("POST", "/v1/qso-corrections/{correctionId}/review"),
-    ("POST", "/v1/statistics/rebuild"),
-}
+ActivityHandler.deprecated_routes = set()
 
 AwardsHandler.store = ActivityHandler.store
 AwardsHandler.repository = ActivityHandler.repository

@@ -1281,10 +1281,6 @@ AwardsHandler.routes = {
     ("POST", "/v1/awards/{awardId}/retire"): AwardsHandler.retire_award,
     (
         "POST",
-        "/v1/awards/{awardId}/recalculate",
-    ): AwardsHandler.recalculate_award,
-    (
-        "POST",
         "/v1/awards/{awardId}/recalculation-jobs",
     ): AwardsHandler.recalculate_award,
     (
@@ -1293,33 +1289,15 @@ AwardsHandler.routes = {
     ): AwardsHandler.get_job,
     (
         "POST",
-        "/v1/awards/assets/{assetId}/upload-url",
-    ): AwardsHandler.asset_upload_url,
-    (
-        "POST",
-        "/v1/awards/assets/{assetId}/content",
-    ): AwardsHandler.asset_content,
-    ("POST", "/v1/awards/evaluate"): AwardsHandler.evaluate,
-    (
-        "POST",
         "/v1/awards/evaluation-jobs",
     ): AwardsHandler.create_evaluation_job,
     ("GET", "/v1/awards/evaluation-jobs/{jobId}"): AwardsHandler.get_job,
-    ("POST", "/v1/awards/progress"): AwardsHandler.progress,
     ("GET", "/v1/awards/progress"): AwardsHandler.progress,
     ("POST", "/v1/awards/requests"): AwardsHandler.request_award,
     (
         "POST",
-        "/v1/awards/requests/{requestId}/issue",
-    ): AwardsHandler.issue_request,
-    (
-        "POST",
         "/v1/awards/requests/{requestId}/issuances",
     ): AwardsHandler.issue_request_resource,
-    (
-        "POST",
-        "/v1/awards/issuances/{issuanceId}/render",
-    ): AwardsHandler.render_issuance,
     (
         "POST",
         "/v1/awards/issuances/{issuanceId}/render-jobs",
@@ -1330,25 +1308,11 @@ AwardsHandler.routes = {
     ): AwardsHandler.get_job,
     (
         "GET",
-        "/v1/awards/issuances/{issuanceId}/download",
-    ): AwardsHandler.download_issuance,
-    (
-        "GET",
         "/v1/awards/issuances/{issuanceId}/artifact",
     ): AwardsHandler.artifact,
 }
 
-AwardsHandler.deprecated_routes = {
-    ("POST", "/v1/awards/{awardId}/submit"),
-    ("POST", "/v1/awards/{awardId}/review"),
-    ("POST", "/v1/awards/{awardId}/publish"),
-    ("POST", "/v1/awards/{awardId}/retire"),
-    ("POST", "/v1/awards/{awardId}/recalculate"),
-    ("POST", "/v1/awards/issuances/{issuanceId}/render"),
-    ("POST", "/v1/awards/requests/{requestId}/issue"),
-    ("POST", "/v1/awards/evaluate"),
-    ("POST", "/v1/awards/progress"),
-}
+AwardsHandler.deprecated_routes = set()
 
 
 if __name__ == "__main__":
