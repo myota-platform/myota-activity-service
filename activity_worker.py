@@ -320,6 +320,7 @@ async def handle_message(
 ) -> None:
     subject, _durable = WORKERS[kind]
     delivery = int(getattr(message.metadata, "num_delivered", 1))
+    job_started_at = asyncio.get_running_loop().time()
     lease_token: str | None = None
     try:
         envelope = json.loads(message.data)
@@ -452,6 +453,7 @@ async def handle_message(
             LOG, logging.INFO, "job.completed", component="activity-worker",
             job_type=kind, job_id=work_id,
             correlation_id=envelope.get("correlationId"), attempt=delivery,
+            duration_ms=round((asyncio.get_running_loop().time() - job_started_at) * 1000, 3),
         )
         await message.ack()
     except Exception as exc:
@@ -462,6 +464,7 @@ async def handle_message(
             component="activity-worker", job_type=kind, job_id=work_id,
             correlation_id=envelope.get("correlationId"), attempt=delivery,
             retry_delay_seconds=delay,
+            duration_ms=round((asyncio.get_running_loop().time() - job_started_at) * 1000, 3),
         )
         try:
             if lease_token is None:
