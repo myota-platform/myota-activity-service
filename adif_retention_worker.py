@@ -89,7 +89,13 @@ def main() -> None:
 
     configure_logging("myota-activity", "activity-adif-retention")
     while True:
-        log_event(logger, logging.INFO, "job.started", component="activity-adif-retention", job_type="source-object-retention")
+        log_event(
+            logger,
+            logging.INFO,
+            "job.started",
+            component="activity-adif-retention",
+            job_type="source-object-retention",
+        )
         try:
             deleted = run_retention_pass(
                 repository,
@@ -99,9 +105,23 @@ def main() -> None:
                 batch_size=batch_size,
             )
         except Exception as exc:
-            log_event(logger, logging.ERROR, "job.failed", component="activity-adif-retention", job_type="source-object-retention", error_type=type(exc).__name__)
+            log_event(
+                logger,
+                logging.ERROR,
+                "job.failed",
+                component="activity-adif-retention",
+                job_type="source-object-retention",
+                error_type=type(exc).__name__,
+            )
             raise
-        log_event(logger, logging.INFO, "job.completed", component="activity-adif-retention", job_type="source-object-retention", deleted_count=deleted)
+        log_event(
+            logger,
+            logging.INFO,
+            "job.completed",
+            component="activity-adif-retention",
+            job_type="source-object-retention",
+            deleted_count=deleted,
+        )
         if not args.loop:
             return
         time.sleep(interval)
