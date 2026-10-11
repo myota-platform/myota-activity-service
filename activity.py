@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from myota_logging import configure_logging
+
 import base64
 import os
 from datetime import datetime, timedelta, timezone
@@ -884,6 +886,7 @@ AwardsHandler.repository = ActivityHandler.repository
 
 
 if __name__ == "__main__":
+    configure_logging("myota-activity", component="api")
     BoundedThreadingHTTPServer(
         ("0.0.0.0", 8004), ActivityHandler
     ).serve_forever()
