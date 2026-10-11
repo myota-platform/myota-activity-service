@@ -362,6 +362,11 @@ async def handle_message(
             delivery,
             "invalid_envelope",
         )
+        log_event(
+            LOG, logging.ERROR, "job.failed", component="activity-worker",
+            job_type=kind, attempt=delivery, error_type="InvalidEnvelope",
+            outcome="dead_lettered",
+        )
         await message.term()
         return
 
