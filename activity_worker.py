@@ -320,7 +320,10 @@ async def handle_message(
 ) -> None:
     subject, _durable = WORKERS[kind]
     delivery = int(getattr(message.metadata, "num_delivered", 1))
-    message_id = getattr(message, "header", lambda _name: None)("Nats-Msg-Id") or "unknown"
+    message_id = (
+        getattr(message, "header", lambda _name: None)("Nats-Msg-Id")
+        or "unknown"
+    )
     job_started_at = asyncio.get_running_loop().time()
     lease_token: str | None = None
     try:
@@ -368,9 +371,9 @@ async def handle_message(
             logging.ERROR,
             "job.failed",
             component="activity-worker",
-        messaging_system="nats",
-        messaging_destination=subject,
-        messaging_message_id=message_id,
+            messaging_system="nats",
+            messaging_destination=subject,
+            messaging_message_id=message_id,
             job_type=kind,
             attempt=delivery,
             error_type="InvalidEnvelope",
@@ -379,7 +382,9 @@ async def handle_message(
         await message.term()
         return
 
-    message_id = getattr(message, "header", lambda _name: None)("Nats-Msg-Id") or str(envelope.get("causationId") or work_id)
+    message_id = getattr(message, "header", lambda _name: None)(
+        "Nats-Msg-Id"
+    ) or str(envelope.get("causationId") or work_id)
     log_event(
         LOG,
         logging.INFO,
@@ -448,9 +453,9 @@ async def handle_message(
             logging.INFO,
             "job.started",
             component="activity-worker",
-        messaging_system="nats",
-        messaging_destination=subject,
-        messaging_message_id=message_id,
+            messaging_system="nats",
+            messaging_destination=subject,
+            messaging_message_id=message_id,
             job_type=kind,
             job_id=work_id,
             correlation_id=envelope.get("correlationId"),
@@ -486,9 +491,9 @@ async def handle_message(
             logging.INFO,
             "job.completed",
             component="activity-worker",
-        messaging_system="nats",
-        messaging_destination=subject,
-        messaging_message_id=message_id,
+            messaging_system="nats",
+            messaging_destination=subject,
+            messaging_message_id=message_id,
             job_type=kind,
             job_id=work_id,
             correlation_id=envelope.get("correlationId"),
@@ -505,9 +510,9 @@ async def handle_message(
             logging.ERROR if delivery >= MAX_DELIVERIES else logging.WARNING,
             "job.failed" if delivery >= MAX_DELIVERIES else "job.retry",
             component="activity-worker",
-        messaging_system="nats",
-        messaging_destination=subject,
-        messaging_message_id=message_id,
+            messaging_system="nats",
+            messaging_destination=subject,
+            messaging_message_id=message_id,
             job_type=kind,
             job_id=work_id,
             correlation_id=envelope.get("correlationId"),
