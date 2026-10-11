@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 from activity_repository import ActivityRepository
 from storage import ObjectStore
+from myota_logging import configure_logging, log_event
 
 logger = logging.getLogger("myota.adif_retention")
 
@@ -86,17 +87,21 @@ def main() -> None:
         int(os.environ.get("MYOTA_ADIF_RETENTION_INTERVAL_SECONDS", "86400")),
     )
 
+    configure_logging("myota-activity", "activity-adif-retention")
     while True:
-        deleted = run_retention_pass(
-            repository,
-            store,
-            bucket=bucket,
-            retention_days=retention_days,
-            batch_size=batch_size,
-        )
-        logger.info(
-            "ADIF retention pass finished; deleted %d source objects", deleted
-        )
+        log_event(logger, logging.INFO, "job.started", component="activity-adif-retention", job_type="source-object-retention")
+        try:
+            deleted = run_retention_pass(
+                repository,
+                store,
+                bucket=bucket,
+                retention_days=retention_days,
+                batch_size=batch_size,
+            )
+        except Exception as exc:
+            log_event(logger, logging.ERROR, "job.failed", component="activity-adif-retention", job_type="source-object-retention", error_type=type(exc).__name__)
+            raise
+        log_event(logger, logging.INFO, "job.completed", component="activity-adif-retention", job_type="source-object-retention", deleted_count=deleted)
         if not args.loop:
             return
         time.sleep(interval)
