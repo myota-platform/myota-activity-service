@@ -12,6 +12,7 @@ from typing import Any
 from activity_repository import ActivityRepository
 from event_consumer import consume_forever, refresh_unresolved_dead_letters
 from prometheus_client import start_http_server
+from myota_logging import configure_logging
 
 
 def recipient_and_kind(event: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -45,6 +46,7 @@ def notice_payload(event: dict[str, Any]) -> dict[str, Any]:
 
 
 async def main() -> None:
+    configure_logging("myota-activity", "activity-notifications")
     start_http_server(
         int(os.environ.get("ACTIVITY_NOTIFICATION_METRICS_PORT", "9110"))
     )
