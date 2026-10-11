@@ -66,10 +66,10 @@ class Telemetry:
             else _Noop()
         )
 
-    def start_request(self, method: str, path: str) -> Request:
+    def start_request(\n        self, method: str, path: str, create_span: bool = True\n    ) -> Request:
         span = None
         try:
-            if self.tracer:
+            if self.tracer and create_span:
                 span = self.tracer.start_span(f"{method} {path}")
         except Exception:
             pass
