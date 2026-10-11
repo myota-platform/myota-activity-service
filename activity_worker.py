@@ -18,6 +18,7 @@ from activity_domain import normalize_qso, parse_adif, qso_deduplication_key
 from activity_repository import ActivityRepository
 from awards import AwardsHandler, evaluate_condition
 from storage import ObjectStore
+from myota_logging import configure_logging, log_event, messaging_span
 
 
 LOG = logging.getLogger("myota.activity.work")
@@ -363,6 +364,11 @@ async def handle_message(
         await message.term()
         return
 
+    log_event(
+        LOG, logging.INFO, "job.received", component="activity-worker",
+        job_type=kind, job_id=work_id, event_id=envelope.get("causationId"),
+        correlation_id=envelope.get("correlationId"), attempt=delivery,
+    )
     try:
         claimed = await asyncio.to_thread(
             repo.claim_work_job, work_id, LEASE_SECONDS
@@ -412,7 +418,17 @@ async def handle_message(
                 repo.claim_work_job, work_id, LEASE_SECONDS
             )
 
-        task = asyncio.create_task(asyncio.to_thread(process, repo, claimed))
+        log_event(
+            LOG, logging.INFO, "job.started", component="activity-worker",
+            job_type=kind, job_id=work_id,
+            correlation_id=envelope.get("correlationId"), attempt=delivery,
+        )
+
+        async def process_with_span() -> None:
+            with messaging_span("myota-activity", message):
+                await asyncio.to_thread(process, repo, claimed)
+
+        task = asyncio.create_task(process_with_span())
         lease_token = claimed["leaseToken"]
         while not task.done():
             done, _pending = await asyncio.wait({task}, timeout=30)
@@ -432,9 +448,21 @@ async def handle_message(
                 LOG.warning("work progress ACK failed", extra={"kind": kind})
         await task
         await asyncio.to_thread(repo.complete_job, work_id, lease_token)
+        log_event(
+            LOG, logging.INFO, "job.completed", component="activity-worker",
+            job_type=kind, job_id=work_id,
+            correlation_id=envelope.get("correlationId"), attempt=delivery,
+        )
         await message.ack()
     except Exception as exc:
         delay = min(300, 2 ** min(max(1, delivery), 8))
+        log_event(
+            LOG, logging.ERROR if delivery >= MAX_DELIVERIES else logging.WARNING,
+            "job.failed" if delivery >= MAX_DELIVERIES else "job.retry",
+            component="activity-worker", job_type=kind, job_id=work_id,
+            correlation_id=envelope.get("correlationId"), attempt=delivery,
+            retry_delay_seconds=delay,
+        )
         try:
             if lease_token is None:
                 await message.nak(delay=delay)
@@ -550,7 +578,7 @@ async def reconcile_legacy_work(
 
 
 async def main() -> None:
-    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
+    configure_logging("myota-activity", "activity-worker")
     repo = ActivityRepository("ACTIVITY_DATABASE_URL")
     if not repo.durable:
         raise RuntimeError(
