@@ -186,6 +186,8 @@ async def consume_forever(
                 delivered = metadata.num_delivered if metadata else 1
                 event: dict[str, Any] = {}
                 event_type = "unknown"
+                message_id = getattr(message, "header", lambda _name: None)("Nats-Msg-Id") or "unknown"
+                job_started_at = asyncio.get_running_loop().time()
                 try:
                     decoded = json.loads(message.data)
                     if not isinstance(decoded, dict):
@@ -206,11 +208,15 @@ async def consume_forever(
                     correlation_id = event.get("correlationId") or getattr(
                         message, "headers", {}
                     ).get("Myota-Correlation-Id")
+                    message_id = getattr(message, "header", lambda _name: None)("Nats-Msg-Id") or event_id
                     log_event(
                         LOG,
                         logging.INFO,
                         "job.received",
                         component="activity-notifications",
+                        messaging_system="nats",
+                        messaging_destination=message.subject,
+                        messaging_message_id=message_id,
                         job_type="domain-notification",
                         event_id=event_id,
                         event_type=event_type,
@@ -242,6 +248,9 @@ async def consume_forever(
                             logging.INFO,
                             "job.started",
                             component="activity-notifications",
+                        messaging_system="nats",
+                        messaging_destination=message.subject,
+                        messaging_message_id=message_id,
                             job_type="domain-notification",
                             event_id=event_id,
                             event_type=event_type,
@@ -268,11 +277,18 @@ async def consume_forever(
                         logging.INFO,
                         "job.completed",
                         component="activity-notifications",
+                        messaging_system="nats",
+                        messaging_destination=message.subject,
+                        messaging_message_id=message_id,
                         job_type="domain-notification",
                         event_id=event_id,
                         event_type=event_type,
                         correlation_id=correlation_id,
                         attempt=delivered,
+                        duration_ms=round(
+                            (asyncio.get_running_loop().time() - job_started_at) * 1000,
+                            3,
+                        ),
                     )
                     await message.ack()
                     OUTCOMES.labels("processed").inc()
@@ -286,6 +302,9 @@ async def consume_forever(
                             logging.WARNING,
                             "job.retry",
                             component="activity-notifications",
+                        messaging_system="nats",
+                        messaging_destination=message.subject,
+                        messaging_message_id=message_id,
                             job_type="domain-notification",
                             event_id=event.get("eventId", "unknown"),
                             event_type=event_type,
@@ -330,6 +349,9 @@ async def consume_forever(
                         logging.ERROR,
                         "job.failed",
                         component="activity-notifications",
+                        messaging_system="nats",
+                        messaging_destination=message.subject,
+                        messaging_message_id=message_id,
                         job_type="domain-notification",
                         event_id=diagnostic_id,
                         event_type=event_type,
