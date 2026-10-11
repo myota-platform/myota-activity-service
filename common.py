@@ -392,15 +392,22 @@ class JsonHandler(BaseHTTPRequestHandler):
             )
         )
         started = getattr(self, "_request_started_at", time.perf_counter())
-        log_http_completed(
-            logging.getLogger(f"{self.service}.http"),
+        span = getattr(self, "_http_span", None)
+        if span:
+            span.set_result(status, route_name)
+        try:
+            log_http_completed(
+                logging.getLogger(f"{self.service}.http"),
             method=getattr(self, "command", "UNKNOWN"),
             route=route_name,
             status=status,
             duration_ms=(time.perf_counter() - started) * 1000,
             request_id=getattr(self, "request_id", ""),
-            correlation_id=getattr(self, "correlation_id", ""),
-        )
+                correlation_id=getattr(self, "correlation_id", ""),
+            )
+        finally:
+            if span:
+                span.end()
 
     def _send(self, status: int, payload: Any) -> None:
         self._log_http_completed(status)
@@ -441,10 +448,16 @@ class JsonHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("X-Request-ID", self.request_id)
         self.send_header("X-Correlation-ID", self.correlation_id)
+        if self._http_span and self._http_span.trace_id:
+            self.send_header("X-Trace-ID", self._http_span.trace_id)
+        self.send_header(
+            "Access-Control-Expose-Headers",
+            "X-Request-ID, X-Correlation-ID, X-Trace-ID",
+        )
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header(
             "Access-Control-Allow-Headers",
-            "Content-Type, Authorization, Idempotency-Key, X-Request-ID, X-Correlation-ID",
+            "Content-Type, Authorization, Idempotency-Key, X-Request-ID, X-Correlation-ID, traceparent, tracestate",
         )
         self.send_header(
             "Access-Control-Allow-Methods",
@@ -498,6 +511,14 @@ class JsonHandler(BaseHTTPRequestHandler):
             self._request_id(),
             self.headers.get("X-Correlation-ID") or new_id(),
         )
+        self._http_span = start_http_span(
+            self.service,
+            "OPTIONS",
+            {
+                "traceparent": self.headers.get("traceparent", ""),
+                "tracestate": self.headers.get("tracestate", ""),
+            },
+        )
         self._send(204, {})
 
     def do_GET(self) -> None:
@@ -522,9 +543,18 @@ class JsonHandler(BaseHTTPRequestHandler):
             self._request_id(),
             self.headers.get("X-Correlation-ID") or new_id(),
         )
+        self._http_span = start_http_span(
+            self.service,
+            method,
+            {
+                "traceparent": self.headers.get("traceparent", ""),
+                "tracestate": self.headers.get("tracestate", ""),
+            },
+        )
         self.command = method
         self._otel_request = telemetry_for(self.service).start_request(
-            method, self.path.split("?", 1)[0]
+            method, self.path.split("?", 1)[0],
+            create_span=False,
         )
         if self.path.split("?", 1)[0] == "/metrics":
             self._send_metrics()
