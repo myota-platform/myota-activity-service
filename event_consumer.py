@@ -207,10 +207,14 @@ async def consume_forever(
                         message, "headers", {}
                     ).get("Myota-Correlation-Id")
                     log_event(
-                        LOG, logging.INFO, "job.received",
+                        LOG,
+                        logging.INFO,
+                        "job.received",
                         component="activity-notifications",
-                        job_type="domain-notification", event_id=event_id,
-                        event_type=event_type, correlation_id=correlation_id,
+                        job_type="domain-notification",
+                        event_id=event_id,
+                        event_type=event_type,
+                        correlation_id=correlation_id,
                         attempt=delivered,
                     )
                     version = (
@@ -234,15 +238,17 @@ async def consume_forever(
                             count_completed()
                             continue
                         log_event(
-                            LOG, logging.INFO, "job.started",
+                            LOG,
+                            logging.INFO,
+                            "job.started",
                             component="activity-notifications",
-                            job_type="domain-notification", event_id=event_id,
-                            event_type=event_type, correlation_id=correlation_id,
+                            job_type="domain-notification",
+                            event_id=event_id,
+                            event_type=event_type,
+                            correlation_id=correlation_id,
                             attempt=delivered,
                         )
-                        with messaging_span(
-                            "myota-activity", message
-                        ):
+                        with messaging_span("myota-activity", message):
                             await handler(event, connection)
                         connection.execute(
                             "INSERT INTO consumer_processed_event(consumer,event_id) VALUES (%s,%s) ON CONFLICT DO NOTHING",
@@ -258,10 +264,14 @@ async def consume_forever(
                         )
                     refresh_unresolved_dead_letters(database_url)
                     log_event(
-                        LOG, logging.INFO, "job.completed",
+                        LOG,
+                        logging.INFO,
+                        "job.completed",
                         component="activity-notifications",
-                        job_type="domain-notification", event_id=event_id,
-                        event_type=event_type, correlation_id=correlation_id,
+                        job_type="domain-notification",
+                        event_id=event_id,
+                        event_type=event_type,
+                        correlation_id=correlation_id,
                         attempt=delivered,
                     )
                     await message.ack()
@@ -272,11 +282,14 @@ async def consume_forever(
                     if not permanent and delivered < MAX_DELIVERIES:
                         delay = min(5 * (3 ** max(delivered - 1, 0)), 300)
                         log_event(
-                            LOG, logging.WARNING, "job.retry",
+                            LOG,
+                            logging.WARNING,
+                            "job.retry",
                             component="activity-notifications",
                             job_type="domain-notification",
                             event_id=event.get("eventId", "unknown"),
-                            event_type=event_type, attempt=delivered,
+                            event_type=event_type,
+                            attempt=delivered,
                             retry_delay_seconds=delay,
                             error_type=type(exc).__name__,
                         )
@@ -313,10 +326,14 @@ async def consume_forever(
                         )
                     refresh_unresolved_dead_letters(database_url)
                     log_event(
-                        LOG, logging.ERROR, "job.failed",
+                        LOG,
+                        logging.ERROR,
+                        "job.failed",
                         component="activity-notifications",
-                        job_type="domain-notification", event_id=diagnostic_id,
-                        event_type=event_type, attempt=delivered,
+                        job_type="domain-notification",
+                        event_id=diagnostic_id,
+                        event_type=event_type,
+                        attempt=delivered,
                         error_type=type(exc).__name__,
                         outcome="dead_lettered",
                     )
