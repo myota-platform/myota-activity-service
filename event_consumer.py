@@ -102,6 +102,15 @@ def _safe_diagnostic(event: dict[str, Any]) -> dict[str, Any]:
     return clean(event)
 
 
+def _header_value(message: Any, name: str) -> str | None:
+    """Return a string NATS header without assuming a callable accessor."""
+    headers = getattr(message, "headers", None)
+    if not isinstance(headers, dict):
+        return None
+    value = headers.get(name)
+    return value if isinstance(value, str) else None
+
+
 def _fallback_event_id(subject: str, sequence: int) -> str:
     """Create a stable diagnostic UUID for malformed envelopes without an ID."""
     digest = hashlib.sha256(f"{subject}:{sequence}".encode()).hexdigest()
@@ -186,12 +195,7 @@ async def consume_forever(
                 delivered = metadata.num_delivered if metadata else 1
                 event: dict[str, Any] = {}
                 event_type = "unknown"
-                message_id = (
-                    getattr(message, "header", lambda _name: None)(
-                        "Nats-Msg-Id"
-                    )
-                    or "unknown"
-                )
+                message_id = _header_value(message, "Nats-Msg-Id") or "unknown"
                 job_started_at = asyncio.get_running_loop().time()
                 try:
                     decoded = json.loads(message.data)
@@ -214,10 +218,7 @@ async def consume_forever(
                         message, "headers", {}
                     ).get("Myota-Correlation-Id")
                     message_id = (
-                        getattr(message, "header", lambda _name: None)(
-                            "Nats-Msg-Id"
-                        )
-                        or event_id
+                        _header_value(message, "Nats-Msg-Id") or event_id
                     )
                     log_event(
                         LOG,

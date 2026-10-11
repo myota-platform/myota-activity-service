@@ -13,6 +13,7 @@ from activity_notification_consumer import notice_payload
 from event_consumer import (
     ACTIVITY_NOTIFICATION_SUBJECTS,
     NOTIFICATION_DURABLE,
+    _header_value,
     _safe_diagnostic,
     consume_forever,
     subscribe_notifications,
@@ -34,6 +35,23 @@ class NotificationConsumerTests(unittest.IsolatedAsyncioTestCase):
                 "eventType": "identity.login.failed.v1",
             },
         )
+
+    def test_nats_headers_are_read_from_the_headers_mapping(self):
+        message = MagicMock()
+        message.headers = {
+            "Nats-Msg-Id": "event-message-id",
+            "Myota-Correlation-Id": "request-correlation-id",
+        }
+        self.assertEqual(
+            _header_value(message, "Nats-Msg-Id"), "event-message-id"
+        )
+        self.assertEqual(
+            _header_value(message, "Myota-Correlation-Id"),
+            "request-correlation-id",
+        )
+        self.assertIsNone(_header_value(message, "missing"))
+        message.headers = None
+        self.assertIsNone(_header_value(message, "Nats-Msg-Id"))
 
     async def test_duplicate_event_is_acknowledged_without_notification(self):
         stop = asyncio.Event()
