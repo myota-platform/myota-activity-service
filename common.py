@@ -554,7 +554,8 @@ class JsonHandler(BaseHTTPRequestHandler):
         )
         self.command = method
         self._otel_request = telemetry_for(self.service).start_request(
-            method, self.path.split("?", 1)[0],
+            method,
+            self.path.split("?", 1)[0],
             create_span=False,
         )
         if self.path.split("?", 1)[0] == "/metrics":
