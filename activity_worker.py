@@ -363,17 +363,28 @@ async def handle_message(
             "invalid_envelope",
         )
         log_event(
-            LOG, logging.ERROR, "job.failed", component="activity-worker",
-            job_type=kind, attempt=delivery, error_type="InvalidEnvelope",
+            LOG,
+            logging.ERROR,
+            "job.failed",
+            component="activity-worker",
+            job_type=kind,
+            attempt=delivery,
+            error_type="InvalidEnvelope",
             outcome="dead_lettered",
         )
         await message.term()
         return
 
     log_event(
-        LOG, logging.INFO, "job.received", component="activity-worker",
-        job_type=kind, job_id=work_id, event_id=envelope.get("causationId"),
-        correlation_id=envelope.get("correlationId"), attempt=delivery,
+        LOG,
+        logging.INFO,
+        "job.received",
+        component="activity-worker",
+        job_type=kind,
+        job_id=work_id,
+        event_id=envelope.get("causationId"),
+        correlation_id=envelope.get("correlationId"),
+        attempt=delivery,
     )
     try:
         claimed = await asyncio.to_thread(
@@ -425,9 +436,14 @@ async def handle_message(
             )
 
         log_event(
-            LOG, logging.INFO, "job.started", component="activity-worker",
-            job_type=kind, job_id=work_id,
-            correlation_id=envelope.get("correlationId"), attempt=delivery,
+            LOG,
+            logging.INFO,
+            "job.started",
+            component="activity-worker",
+            job_type=kind,
+            job_id=work_id,
+            correlation_id=envelope.get("correlationId"),
+            attempt=delivery,
         )
 
         async def process_with_span() -> None:
@@ -455,21 +471,34 @@ async def handle_message(
         await task
         await asyncio.to_thread(repo.complete_job, work_id, lease_token)
         log_event(
-            LOG, logging.INFO, "job.completed", component="activity-worker",
-            job_type=kind, job_id=work_id,
-            correlation_id=envelope.get("correlationId"), attempt=delivery,
-            duration_ms=round((asyncio.get_running_loop().time() - job_started_at) * 1000, 3),
+            LOG,
+            logging.INFO,
+            "job.completed",
+            component="activity-worker",
+            job_type=kind,
+            job_id=work_id,
+            correlation_id=envelope.get("correlationId"),
+            attempt=delivery,
+            duration_ms=round(
+                (asyncio.get_running_loop().time() - job_started_at) * 1000, 3
+            ),
         )
         await message.ack()
     except Exception as exc:
         delay = min(300, 2 ** min(max(1, delivery), 8))
         log_event(
-            LOG, logging.ERROR if delivery >= MAX_DELIVERIES else logging.WARNING,
+            LOG,
+            logging.ERROR if delivery >= MAX_DELIVERIES else logging.WARNING,
             "job.failed" if delivery >= MAX_DELIVERIES else "job.retry",
-            component="activity-worker", job_type=kind, job_id=work_id,
-            correlation_id=envelope.get("correlationId"), attempt=delivery,
+            component="activity-worker",
+            job_type=kind,
+            job_id=work_id,
+            correlation_id=envelope.get("correlationId"),
+            attempt=delivery,
             retry_delay_seconds=delay,
-            duration_ms=round((asyncio.get_running_loop().time() - job_started_at) * 1000, 3),
+            duration_ms=round(
+                (asyncio.get_running_loop().time() - job_started_at) * 1000, 3
+            ),
         )
         try:
             if lease_token is None:
