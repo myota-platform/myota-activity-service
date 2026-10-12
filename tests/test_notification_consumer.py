@@ -101,7 +101,8 @@ class NotificationConsumerTests(unittest.IsolatedAsyncioTestCase):
         handler.assert_awaited_once()
         message.ack.assert_awaited_once()
         received = next(
-            call for call in log_event.call_args_list
+            call
+            for call in log_event.call_args_list
             if call.args[2] == "job.received"
         )
         self.assertEqual(

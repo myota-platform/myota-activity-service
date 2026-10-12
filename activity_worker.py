@@ -32,6 +32,7 @@ def _message_header(message: Any, name: str) -> str | None:
     value = headers.get(name)
     return value if isinstance(value, str) else None
 
+
 WORKERS = {
     "QSO_INGESTION": (
         "myota.work.activity.qso-ingestion.v1",
