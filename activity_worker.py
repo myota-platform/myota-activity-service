@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 import json
 import logging
 import os
@@ -22,6 +23,15 @@ from myota_logging import configure_logging, log_event, messaging_span
 
 
 LOG = logging.getLogger("myota.activity.work")
+
+
+def _message_header(message: Any, name: str) -> str | None:
+    headers = getattr(message, "headers", None)
+    if not isinstance(headers, Mapping):
+        return None
+    value = headers.get(name)
+    return value if isinstance(value, str) else None
+
 WORKERS = {
     "QSO_INGESTION": (
         "myota.work.activity.qso-ingestion.v1",
@@ -320,10 +330,7 @@ async def handle_message(
 ) -> None:
     subject, _durable = WORKERS[kind]
     delivery = int(getattr(message.metadata, "num_delivered", 1))
-    message_id = (
-        getattr(message, "header", lambda _name: None)("Nats-Msg-Id")
-        or "unknown"
-    )
+    message_id = _message_header(message, "Nats-Msg-Id") or "unknown"
     job_started_at = asyncio.get_running_loop().time()
     lease_token: str | None = None
     try:
@@ -382,9 +389,9 @@ async def handle_message(
         await message.term()
         return
 
-    message_id = getattr(message, "header", lambda _name: None)(
-        "Nats-Msg-Id"
-    ) or str(envelope.get("causationId") or work_id)
+    message_id = _message_header(message, "Nats-Msg-Id") or str(
+        envelope.get("causationId") or work_id
+    )
     log_event(
         LOG,
         logging.INFO,

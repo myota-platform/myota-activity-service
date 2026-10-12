@@ -15,6 +15,7 @@ from activity_worker import (
     WORKERS,
     consume_kind,
     handle_message,
+    _message_header,
     validate_consumer_config,
 )
 
@@ -38,6 +39,16 @@ def command(kind: str = "QSO_INGESTION", work_id: str = JOB_ID) -> dict:
 
 
 class ActivityWorkConsumerTests(unittest.IsolatedAsyncioTestCase):
+    def test_message_header_uses_nats_python_mapping(self):
+        message = MagicMock()
+        message.headers = {"Nats-Msg-Id": "activity-work-message"}
+        self.assertEqual(
+            _message_header(message, "Nats-Msg-Id"),
+            "activity-work-message",
+        )
+        message.headers = None
+        self.assertIsNone(_message_header(message, "Nats-Msg-Id"))
+
     def message(self, envelope: dict, delivery: int = 1):
         message = MagicMock()
         body = dict(envelope)
