@@ -21,15 +21,19 @@ broad legacy durables after validating it. See the
 [notification consumer runbook](https://github.com/myota-platform/myota-docs/blob/main/docs/operations/messaging/activity-notification-consumer.md)
 and [Phase 3 evidence](https://github.com/myota-platform/myota-docs/blob/main/docs/operations/messaging/evidence/phase3-domain-consumers-2026-10-10.md).
 
-Phase 4 moves the six accepted job kinds to `MYOTA_ACTIVITY_WORK`. The work
-command carries only a stable job ID; the Activity database owns status,
+Phase 4 moved the six accepted job kinds to `MYOTA_ACTIVITY_WORK`. The
+work command carries only a stable job ID; the Activity database owns status,
 payload, leases, retries, and redrive audit. Per-kind pull durables share
 workers by group and use explicit post-commit ACK with UUID lease fencing. The
 migration preserves `activity_job` history, drops the DB-poller claim index,
-and removes only synthetic state-only notification jobs. The implementation
-and isolated tests are complete, but production still runs the old poller until
-the staged drain/backfill/rollout is verified. Follow the [Activity work queue
-runbook](https://github.com/myota-platform/myota-docs/blob/main/docs/operations/messaging/activity-work-queues.md)
+and removes only synthetic state-only notification jobs.
+
+The cutover is deployed in the current local, non-production K3s environment:
+two Activity worker replicas consume the six exact durables. The database
+poller and rollout-only repair are retired. The selected-work backlog was zero
+at cutover, so live handler execution was not observed there; isolated
+PostgreSQL/JetStream qualification processed each work type. Follow the
+[Activity work queue runbook](https://github.com/myota-platform/myota-docs/blob/main/docs/operations/messaging/activity-work-queues.md)
 and [Phase 4 evidence](https://github.com/myota-platform/myota-docs/blob/main/docs/operations/messaging/evidence/phase4-activity-work-2026-10-10.md).
 
 The platform purpose and the distinction between reusable activity capability
@@ -81,9 +85,10 @@ QSO ingestion, correction review, statistics rebuilds, award evaluation and
 historical recalculation, issuance, certificate rendering, and artifact
 retrieval. Participant mutations are owner-authorized, award recalculation is
 version-scoped, and statistics snapshots are replaced deterministically. The
-legacy action routes remain deprecated aliases. Phase 4 source changes route
-six accepted kinds through the transactional outbox and JetStream; production
-cutover is still pending. See the [Phase 3 API record](https://github.com/myota-platform/myota-docs/blob/main/docs/api-phase3-activity-award-jobs.md)
+legacy action routes remain deprecated aliases. Phase 4 is deployed in the
+current local, non-production K3s environment: six accepted kinds route through
+the transactional outbox to JetStream. The cutover backlog was empty, so no
+live handler execution was observed there. See the [Phase 3 API record](https://github.com/myota-platform/myota-docs/blob/main/docs/api-phase3-activity-award-jobs.md)
 and [Phase 4 work queue record](https://github.com/myota-platform/myota-docs/blob/main/docs/operations/messaging/activity-work-queues.md).
 
 The unit-test adapter remains in-memory for fast contract tests. When
