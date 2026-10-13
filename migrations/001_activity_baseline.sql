@@ -2,7 +2,6 @@
 -- PostgreSQL database dump
 --
 
-\restrict L3KfrxNRHk5PgQIECHmX2Lwo5ISvikGhdbxfSl01ne4Mzkv3rsVMBbFM5cCe8wq
 
 -- Dumped from database version 16.15
 -- Dumped by pg_dump version 16.15
@@ -1043,7 +1042,6 @@ ALTER TABLE ONLY public.activity_work_redrive_audit
 -- PostgreSQL database dump complete
 --
 
-\unrestrict L3KfrxNRHk5PgQIECHmX2Lwo5ISvikGhdbxfSl01ne4Mzkv3rsVMBbFM5cCe8wq
 
 
 -- Record that this immutable schema baseline has been installed or adopted.
