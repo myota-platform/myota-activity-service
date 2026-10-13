@@ -130,12 +130,24 @@ stateless activity API replicas by default and separately scales workers.
 
 ## Activity migrations
 
-The ordered activity schema migrations in `migrations/` are service-owned and
-must be synchronized byte-for-byte to `myota-deploy/db/migrations/activity/`;
-the deployment runner applies them in numeric order. Migration `003` adds a
-retry marker for deleted ADIF sources; migration `004` indexes both completed
-and failed imports eligible for cleanup. A failed object-store deletion stays
-eligible for retry without deleting the durable import result.
+The authoritative Activity schema is the immutable
+[`migrations/001_activity_baseline.sql`](migrations/001_activity_baseline.sql).
+Deploy synchronizes it at
+`db/migrations/activity/001_activity_baseline.sql`; Platform mirrors that
+copy. Deploy owns the combined migration runner and applies the Activity
+baseline as part of the three-database deployment gate.
+
+This baseline consolidates the former migrations 001–008: normalized Activity
+tables, deletion indexes, ADIF source retention, audited dead-letter redrive,
+notification replay coordinates, JetStream work/outbox state, and nullable
+request correlation. The baseline contains schema only; it does not copy
+Activity data from Core. Durable Activity mode owns the `activity_*` tables
+and does not use generic `service_state` as its source of truth.
+
+The exact historical file-to-schema mapping and current rebuild gates are in
+the [database baseline inventory](https://github.com/myota-platform/myota-docs/blob/main/docs/operations/databases/baseline-migration-inventory.md).
+Future schema changes use numbered, checksummed migrations after the baseline;
+never edit an applied baseline.
 
 ## Architecture
 
